@@ -65,6 +65,23 @@ const char kNetLogMaxSizeMb[] = "net-log-max-size-mb";
 // for the format.
 const char kSSLKeyLogFile[] = "ssl-key-log-file";
 
+// Records every HTTP request and response to the given path as a WARC archive
+// (ISO 28500). This captures full request and response bodies, so the resulting
+// file contains everything the browsing session sent and received, including
+// credentials and personal data.
+//
+// For byte-faithful captures — payloads stored exactly as they arrived, still
+// compressed, matching their Content-Encoding — also pass
+// --enable-features=RendererSideContentDecoding. Without it the network stack
+// decodes bodies before they can be recorded, and the archive stores decoded
+// payloads with their encoding headers rewritten to match.
+//
+// A path ending in ".gz" is written as a gzip-compressed archive, with each
+// record in a gzip member of its own. That is the layout WARC tooling expects
+// of a ".warc.gz", and the one that lets a reader decompress a single record
+// without reading the records before it.
+const char kWarcOutput[] = "warc-output";
+
 const char kTestThirdPartyCookiePhaseout[] = "test-third-party-cookie-phaseout";
 
 // Treat given (insecure) origins as secure origins. Multiple origins can be

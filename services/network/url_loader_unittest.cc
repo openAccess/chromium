@@ -21,6 +21,7 @@
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -129,6 +130,7 @@
 #include "services/network/public/mojom/url_loader_network_service_observer.mojom-shared.h"
 #include "services/network/resource_scheduler/resource_scheduler_client.h"
 #include "services/network/shared_dictionary/shared_dictionary_access_checker.h"
+#include "services/network/slop_bucket.h"
 #include "services/network/test/mock_devtools_observer.h"
 #include "services/network/test/test_data_pipe_getter.h"
 #include "services/network/test/test_network_context_client.h"
@@ -140,6 +142,7 @@
 #include "services/network/trust_tokens/trust_token_request_helper.h"
 #include "services/network/trust_tokens/trust_token_request_helper_factory.h"
 #include "services/network/url_request_context_owner.h"
+#include "services/network/warc_recorder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -726,10 +729,11 @@ struct URLLoaderOptions {
         ObserverWrapper(std::move(devtools_observer)),
         ObserverWrapper(std::move(device_bound_session_observer)),
         std::move(accept_ch_frame_observer), *shared_resource_checker,
-        std::move(durable_message_writer),
+        std::move(durable_message_writer), std::move(warc_recorder_factory),
         std::move(provided_response_body_stream));
   }
 
+  WarcExchangeRecorderFactory warc_recorder_factory;
   int32_t options = mojom::kURLLoadOptionNone;
   base::WeakPtr<mojom::URLLoaderClient> sync_url_loader_client;
   net::NetworkTrafficAnnotationTag traffic_annotation =
@@ -980,6 +984,7 @@ class URLLoaderTest : public testing::Test {
                                   : mojo::NullRemote();
     url_loader_options.durable_message_writer =
         make_unique<MultipleDurableMessageWriterImpl>(durable_messages_);
+    url_loader_options.warc_recorder_factory = warc_recorder_factory_;
     url_loader = url_loader_options.MakeURLLoader(
         context(), DeleteLoaderCallback(&delete_run_loop, &url_loader),
         loader.BindNewPipeAndPassReceiver(), request, client_.CreateRemote());
@@ -1002,7 +1007,32 @@ class URLLoaderTest : public testing::Test {
 
     if (body) {
       client_.RunUntilResponseBodyArrived();
+      if (delay_body_read_) {
+        // Wait for the loader to fill the mojo data pipe and park. Body data
+        // arrives over a real socket, so RunUntilIdle() alone returns long
+        // before enough has been delivered; yield repeatedly until the loader
+        // actually diverts into the SlopBucket. Draining only afterwards is
+        // what forces that path.
+        const base::TimeTicks deadline =
+            base::TimeTicks::Now() + base::Seconds(10);
+        while (url_loader && !url_loader->used_slop_bucket_for_testing() &&
+               base::TimeTicks::Now() < deadline) {
+          base::RunLoop yield_loop;
+          base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+              FROM_HERE, yield_loop.QuitClosure(), base::Milliseconds(5));
+          yield_loop.Run();
+          // Sample while the loader is still alive; it deletes itself as soon
+          // as the load completes.
+          if (url_loader) {
+            used_slop_bucket_ |= url_loader->used_slop_bucket_for_testing();
+          }
+        }
+      }
       *body = ReadBody();
+    }
+
+    if (url_loader) {
+      used_slop_bucket_ |= url_loader->used_slop_bucket_for_testing();
     }
 
     client_.RunUntilComplete();
@@ -1015,6 +1045,20 @@ class URLLoaderTest : public testing::Test {
 
     context().set_network_context_client(nullptr);
     return client_.completion_status().error_code;
+  }
+
+  // Installs a WARC recorder writing to `path` and returns it. The caller must
+  // destroy it before reading the archive so queued records are flushed.
+  std::unique_ptr<WarcRecorder> StartWarcRecording(const base::FilePath& path) {
+    auto recorder = std::make_unique<WarcRecorder>(
+        base::File(path,
+                   base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE),
+        WarcRecorder::Limits(), warc::WarcWriter::Compression::kNone);
+    warc_recorder_factory_ = base::BindLambdaForTesting(
+        [raw = recorder.get()]() -> std::unique_ptr<WarcExchangeRecorder> {
+          return raw->CreateExchangeRecorder();
+        });
+    return recorder;
   }
 
   void LoadAndCompareFile(const std::string& path) {
@@ -1325,6 +1369,13 @@ class URLLoaderTest : public testing::Test {
     OnServerReceivedRequest(request);
   }
 
+  // WARC recording, off unless a test installs a factory.
+  WarcExchangeRecorderFactory warc_recorder_factory_;
+  // Drain the response body only after the loader has parked on a full pipe.
+  bool delay_body_read_ = false;
+  // Whether the last load actually went through the SlopBucket.
+  bool used_slop_bucket_ = false;
+
   base::test::TaskEnvironment task_environment_;
   net::ScopedTestRoot scoped_test_root_;
   net::EmbeddedTestServer test_server_;
@@ -1452,6 +1503,68 @@ TEST_F(URLLoaderTest, Basic) {
 
 TEST_F(URLLoaderTest, Empty) {
   LoadAndCompareFile("empty.html");
+}
+
+// Body bytes reach the client by more than one route. When the mojo data pipe
+// fills up, reads divert through the SlopBucket and never pass through the
+// normal read path's tee, so an archive that only watched that path would
+// silently record a short body -- the worst possible failure for an archive,
+// because nothing about the resulting record looks wrong.
+TEST_F(URLLoaderTest, WarcRecordsCompleteBodyThroughSlopBucket) {
+  base::test::ScopedFeatureList feature_list(kSlopBucket);
+
+  // The response body pipe is kLargerDataPipeAllocationSize (2MB), so the body
+  // has to comfortably exceed that for the pipe to actually fill.
+  const std::string large_body(6 * 1024 * 1024, 'x');
+
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&large_body](const net::test_server::HttpRequest&)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        response->set_content(large_body);
+        response->set_content_type("text/plain");
+        return response;
+      }));
+  ASSERT_TRUE(server.Start());
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath archive_path =
+      temp_dir.GetPath().AppendASCII("slop.warc");
+
+  std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(archive_path);
+
+  // Read the body only after the loader has parked on a full pipe.
+  delay_body_read_ = true;
+
+  ResourceRequest request =
+      CreateResourceRequest("GET", server.GetURL("/big.txt"));
+  // A SlopBucket is only granted at or above the feature's require_priority,
+  // which defaults to MEDIUM.
+  request.priority = net::HIGHEST;
+
+  std::string body;
+  ASSERT_EQ(net::OK, LoadRequest(request, &body));
+  EXPECT_EQ(large_body, body);
+
+  // Without this the test could pass while never exercising the SlopBucket,
+  // which would make it worse than no test at all.
+  ASSERT_TRUE(used_slop_bucket_)
+      << "the SlopBucket path was never taken, so this test proves nothing";
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
+
+  std::string archive;
+  ASSERT_TRUE(base::ReadFileToString(archive_path, &archive));
+
+  // The archived payload must be the whole body, not just the part that
+  // happened to travel the normal read path.
+  const size_t header_end = archive.find("\r\n\r\n\r\n");
+  ASSERT_NE(header_end, std::string::npos);
+  EXPECT_NE(archive.find(large_body), std::string::npos)
+      << "archived body is incomplete; SlopBucket bytes were dropped";
 }
 
 TEST_F(URLLoaderTest, BasicSSL) {

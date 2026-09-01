@@ -84,6 +84,8 @@ const char* const kBadFlags[] = {
     // dangerous.
     net::switches::kLogNetLog,
     network::switches::kNetLogCaptureMode,
+    // Writes every request and response, bodies included, to a file.
+    network::switches::kWarcOutput,
 
     // These flags disable sandbox-related security.
     sandbox::policy::switches::kDisableGpuSandbox,

@@ -1,0 +1,45 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+static_library("warc") {
+  sources = [
+    "warc_record.cc",
+    "warc_record.h",
+    "warc_writer.cc",
+    "warc_writer.h",
+  ]
+
+  deps = [
+    "//base",
+    "//components/base32",
+    "//crypto",
+    "//third_party/zlib/google:compression_utils",
+  ]
+}
+
+source_set("test_support") {
+  testonly = true
+  sources = [
+    "warc_test_util.cc",
+    "warc_test_util.h",
+  ]
+
+  deps = [ "//third_party/zlib" ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "warc_record_unittest.cc",
+    "warc_writer_unittest.cc",
+  ]
+
+  deps = [
+    ":test_support",
+    ":warc",
+    "//base",
+    "//base/test:test_support",
+    "//testing/gtest",
+  ]
+}

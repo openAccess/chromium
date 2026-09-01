@@ -224,6 +224,21 @@ interface NetworkService {
   // for more details).
   SetSSLKeyLogFile(mojo_base.mojom.File file);
 
+  // Starts recording every request and response handled by this service into
+  // |file| as a WARC archive (ISO 28500). |filename| is recorded in the
+  // archive's warcinfo record so a reader can tell what the capture was called,
+  // independently of where the file later ends up.
+  //
+  // When |compress_records| is true each record is written as its own gzip
+  // member — the concatenated-member layout that ".warc.gz" denotes, and the
+  // one that lets a reader decompress a single record without reading the
+  // records before it.
+  //
+  // The file must already be open for writing: the network service is sandboxed
+  // and cannot open arbitrary paths itself.
+  StartWarcRecording(mojo_base.mojom.File file, string filename,
+                     bool compress_records);
+
   // Creates a new network context with the given parameters.
   // This method is not used on Desktop (excluding Android Desktop) when the
   // CreateNetworkContextNonBlocking feature is enabled. In those environments,

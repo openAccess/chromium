@@ -764,6 +764,34 @@ network::mojom::NetworkService* GetNetworkService() {
         }
       }
 
+      if (command_line->HasSwitch(network::switches::kWarcOutput)) {
+        const base::FilePath warc_path =
+            command_line->GetSwitchValuePath(network::switches::kWarcOutput);
+        if (warc_path.empty()) {
+          LOG(ERROR) << "warc-output argument missing a path";
+        } else {
+          // The network service is sandboxed and cannot open an arbitrary path,
+          // so open it here and hand the descriptor across, as the NetLog and
+          // SSL key log do.
+          base::File file = NetworkServiceInstancePrivate::BlockingOpenFile(
+              warc_path,
+              base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+          if (!file.IsValid()) {
+            LOG(ERROR) << "Failed opening WARC output file: "
+                       << warc_path.value();
+          } else {
+            // A ".gz" path selects gzip framing, the way wget and other
+            // capture tools spell the same choice. The network service never
+            // sees the path, so this has to be decided here.
+            const bool compress_records =
+                warc_path.MatchesFinalExtension(FILE_PATH_LITERAL(".gz"));
+            g_observed_network_service->remote()->StartWarcRecording(
+                std::move(file), warc_path.BaseName().AsUTF8Unsafe(),
+                compress_records);
+          }
+        }
+      }
+
       if (FirstPartySetsHandlerImpl::GetInstance()->IsEnabled()) {
         if (std::optional<net::GlobalFirstPartySets> sets =
                 FirstPartySetsHandlerImpl::GetInstance()->GetSets(

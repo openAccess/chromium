@@ -1352,6 +1352,34 @@ void NetworkService::GetVrpFlags(GetVrpFlagsCallback callback) {
 }
 #endif  // BUILDFLAG(ENABLE_VRP_FLAGS)
 
+void NetworkService::StartWarcRecording(base::File file,
+                                        const std::string& filename,
+                                        bool compress_records) {
+  if (!file.IsValid()) {
+    LOG(ERROR) << "WARC recording not started: file is not open for writing.";
+    return;
+  }
+
+  // Whether payloads can be stored exactly as they arrived depends on the
+  // client being willing to decode them itself. Say so plainly rather than
+  // letting a capture look byte-faithful when it is not.
+  if (!base::FeatureList::IsEnabled(features::kRendererSideContentDecoding)) {
+    LOG(WARNING)
+        << "WARC recording: response bodies will be stored decoded, with "
+           "Content-Encoding and Content-Length rewritten to match. For "
+           "byte-faithful captures, also pass "
+           "--enable-features=RendererSideContentDecoding.";
+  }
+
+  warc_recorder_ = std::make_unique<WarcRecorder>(
+      std::move(file), WarcRecorder::Limits(),
+      compress_records ? warc::WarcWriter::Compression::kGzipPerRecord
+                       : warc::WarcWriter::Compression::kNone);
+  // The warcinfo record describes the capture and must precede the exchanges
+  // it accounts for.
+  warc_recorder_->WriteWarcinfo(filename);
+}
+
 std::unique_ptr<DevtoolsDurableMessageWriter>
 NetworkService::MaybeCreateDurableMessageWriter(
     const base::UnguessableToken& throttling_profile_id,

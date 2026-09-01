@@ -60,6 +60,7 @@
 #include "services/network/public/mojom/network_change_manager.mojom.h"
 #include "services/network/public/mojom/network_quality_estimator_manager.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
+#include "services/network/warc_recorder.h"
 #if BUILDFLAG(IS_ANDROID)
 #include "services/network/public/mojom/network_context.mojom.h"
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -171,6 +172,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
       mojo::PendingRemote<mojom::NetLogProxySource> proxy_source,
       mojo::PendingReceiver<mojom::NetLogProxySink>) override;
   void SetSSLKeyLogFile(base::File file) override;
+  void StartWarcRecording(base::File file,
+                          const std::string& filename,
+                          bool compress_records) override;
   void CreateNetworkContext(
       mojo::PendingReceiver<mojom::NetworkContext> receiver,
       mojom::NetworkContextParamsPtr params) override;
@@ -413,6 +417,13 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
     return durable_message_collector_manager_.get();
   }
 
+  // Null unless WARC recording is active.
+  WarcRecorder* warc_recorder() { return warc_recorder_.get(); }
+
+  base::WeakPtr<NetworkService> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
 #if BUILDFLAG(IS_MAC)
   inline void SetUseMockURLSessionURLLoaderForTesting(
       bool use_mock_url_session_url_loader) {
@@ -609,6 +620,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
 
   std::unique_ptr<DevtoolsDurableMessageCollectorManager>
       durable_message_collector_manager_;
+
+  // Set only while WARC recording is active.
+  std::unique_ptr<WarcRecorder> warc_recorder_;
 
 #if BUILDFLAG(IS_MAC)
   bool use_mock_url_session_url_loader_for_testing_{false};

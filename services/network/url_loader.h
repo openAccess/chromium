@@ -108,6 +108,13 @@ class SharedResourceChecker;
 class SlopBucket;
 class TrustTokenUrlLoaderInterceptor;
 class DevtoolsDurableMessageWriter;
+class WarcExchangeRecorder;
+
+// Mints a recorder for a single request/response exchange. Null when WARC
+// recording is off. Invoked once per redirect hop, since each hop is archived
+// as its own record pair.
+using WarcExchangeRecorderFactory =
+    base::RepeatingCallback<std::unique_ptr<WarcExchangeRecorder>()>;
 
 class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
     : public mojom::URLLoader,
@@ -185,6 +192,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
       SharedResourceChecker& shared_resource_checker,
       std::unique_ptr<DevtoolsDurableMessageWriter>
           maybe_durable_message_writer,
+      WarcExchangeRecorderFactory warc_recorder_factory,
       mojo::ScopedDataPipeProducerHandle response_body_stream = {});
 
   URLLoader(const URLLoader&) = delete;
@@ -294,6 +302,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
     partial_decoder_decoding_buffer_size_ =
         partial_decoder_decoding_buffer_size;
   }
+
+  // Whether a SlopBucket was actually created for this load, which happens only
+  // when the mojo data pipe filled up and the request qualified. Lets a test
+  // assert it genuinely exercised that path rather than passing vacuously.
+  bool used_slop_bucket_for_testing() const { return slop_bucket_ != nullptr; }
 
   // Gets the URLLoader associated with this request.
   static URLLoader* ForRequest(const net::URLRequest& request);
@@ -480,6 +493,20 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
   // chunks into `devtools_durable_message_`. If `num_bytes` <= 0, marks the
   // message as complete.
   void MaybeCollectDurableMessage(size_t new_data_offset, int num_bytes);
+
+  // Hands the current exchange's response headers, peer address and protocol
+  // to the WARC recorder. No-op when recording is off.
+  void FeedWarcResponseMetadata();
+
+  // Adds response body bytes to the WARC record. Body bytes reach the client by
+  // several routes — straight into the mojo buffer, by way of the SlopBucket
+  // when that buffer is full, or into a discard buffer when the body is being
+  // read only to drain it — and an archive must see all of them, exactly once.
+  void CollectWarcBodyBytes(base::span<const uint8_t> bytes);
+
+  // Closes out the current WARC exchange, if any, and starts a fresh one.
+  // Called per redirect hop so each hop is archived separately.
+  void StartNextWarcExchange();
 
   const raw_ptr<net::URLRequestContext> url_request_context_;
 
@@ -715,6 +742,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
 
   // DevTools Durable Message instances, if enabled.
   std::unique_ptr<DevtoolsDurableMessageWriter> durable_message_writer_;
+
+  // Records exchanges to a WARC archive, if WARC recording is enabled. One
+  // recorder covers a single request/response pair, so the factory is called
+  // again for each redirect hop.
+  WarcExchangeRecorderFactory warc_recorder_factory_;
+  std::unique_ptr<WarcExchangeRecorder> warc_recorder_;
 
   // Whether Sec-Private-Verification-Token was removed from this request
   // because cookies were included.

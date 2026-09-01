@@ -400,6 +400,7 @@ test("components_unittests") {
     "//components/variations/service:unit_tests",
     "//components/vector_icons:unit_tests",
     "//components/wallet/core/browser:unit_tests",
+    "//components/warc:unit_tests",
     "//components/web_resource:unit_tests",
     "//components/webauthn/core/browser:unit_tests",
     "//components/webauthn/core/browser/device_authorization:unit_tests",

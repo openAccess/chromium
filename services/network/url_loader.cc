@@ -134,6 +134,7 @@
 #include "services/network/trust_tokens/trust_token_url_loader_interceptor.h"
 #include "services/network/url_loader_factory.h"
 #include "services/network/url_loader_util.h"
+#include "services/network/warc_recorder.h"
 #include "third_party/abseil-cpp/absl/container/inlined_vector.h"
 #include "url/origin.h"
 
@@ -344,6 +345,7 @@ URLLoader::URLLoader(
     mojo::PendingRemote<mojom::AcceptCHFrameObserver> accept_ch_frame_observer,
     SharedResourceChecker& shared_resource_checker,
     std::unique_ptr<DevtoolsDurableMessageWriter> maybe_durable_message_writer,
+    WarcExchangeRecorderFactory warc_recorder_factory,
     mojo::ScopedDataPipeProducerHandle response_body_stream)
     : url_request_context_(context.GetUrlRequestContext()),
       network_context_client_(context.GetNetworkContextClient()),
@@ -427,8 +429,13 @@ URLLoader::URLLoader(
               ? request.trusted_params
                     ->expected_response_headers_for_synthetic_response
               : nullptr),
-      durable_message_writer_(std::move(maybe_durable_message_writer)) {
+      durable_message_writer_(std::move(maybe_durable_message_writer)),
+      warc_recorder_factory_(std::move(warc_recorder_factory)) {
   DCHECK(delete_callback_);
+
+  if (warc_recorder_factory_) {
+    warc_recorder_ = warc_recorder_factory_.Run();
+  }
 
   // To minimize performance overhead and UMA report volume, this metric is
   // only logged for extremely long URLs, and aims to track their prevalence.
@@ -533,6 +540,22 @@ URLLoader::URLLoader(
   url_loader_util::ConfigureUrlRequest(request, *factory_params_,
                                        *origin_access_list_, *url_request_,
                                        shared_resource_checker);
+  // A WARC response record is supposed to hold the payload exactly as it came
+  // off the wire, still in its transfer encoding, so that it agrees with the
+  // Content-Encoding recorded beside it. Asking net to skip decoding gives us
+  // those bytes -- but it also makes the client responsible for decoding, which
+  // only happens when renderer-side content decoding is enabled. Where it is
+  // not, leave decoding in place and let the recorder store decoded bytes with
+  // the encoding headers rewritten to match, which is honest if less faithful.
+  if (warc_recorder_) {
+    const bool client_can_decode =
+        base::FeatureList::IsEnabled(features::kRendererSideContentDecoding);
+    if (client_can_decode) {
+      url_request_->set_client_side_content_decoding_enabled(true);
+    }
+    warc_recorder_->SetBodyIsWireFormat(client_can_decode);
+  }
+
   if (context.ShouldRequireIsolationInfo()) {
     DCHECK(!url_request_->isolation_info().IsEmpty());
   }
@@ -571,7 +594,10 @@ void URLLoader::SetUpUrlRequestCallbacks(
         &URLLoader::IsSharedDictionaryReadAllowed, base::Unretained(this)));
   }
 
-  if (devtools_request_id()) {
+  // WARC recording needs this for the same reason DevTools does: it reports
+  // what the server actually sent, whereas URLRequest::response_headers()
+  // returns headers merged with the cached entry on a revalidation.
+  if (devtools_request_id() || warc_recorder_) {
     url_request_->SetResponseHeadersCallback(base::BindRepeating(
         &URLLoader::SetRawResponseHeaders, base::Unretained(this)));
   }
@@ -802,6 +828,9 @@ void URLLoader::FollowRedirect(
                           request_credentials_mode_);
 
   ResetRawHeadersForRedirect();
+  // The previous hop is complete; everything from here belongs to a new
+  // request/response pair.
+  StartNextWarcExchange();
 
   // Removing headers can't make the set of pre-existing headers unsafe, but
   // adding headers can.
@@ -979,6 +1008,9 @@ void URLLoader::OnReceivedRedirect(net::URLRequest* url_request,
 
   mojom::URLResponseHeadPtr response = BuildResponseHead();
   DispatchOnRawResponse();
+  // Archive the redirect response itself; each hop of a chain is its own
+  // record pair, and the 3xx is part of what was served.
+  FeedWarcResponseMetadata();
   ReportFlaggedResponseCookies(false);
 
   // Enforce the Cross-Origin-Resource-Policy (CORP) header.
@@ -1167,6 +1199,7 @@ void URLLoader::OnResponseStarted(net::URLRequest* url_request, int net_error) {
 
   response_ = BuildResponseHead();
   DispatchOnRawResponse();
+  FeedWarcResponseMetadata();
 
   if (expected_response_headers_for_synthetic_response &&
       !CheckHeaderConsistencyForSyntheticResponse(
@@ -1598,6 +1631,13 @@ void URLLoader::ReadMore() {
       const size_t consumed =
           slop_bucket_->Consume(base::as_writable_byte_span(*pending_write_));
       if (consumed) {
+        // Bytes that went through the SlopBucket bypassed the read path's tee:
+        // they were read while `pending_write_` was null, so this is the first
+        // and only point at which they are observable in order. Archiving them
+        // here is what keeps a body complete under mojo pipe backpressure.
+        CollectWarcBodyBytes(
+            base::as_byte_span(base::span(*pending_write_).first(consumed)));
+
         // TODO(ricea): Refactor the way pending writes work so we don't need to
         // poke a value into `pending_write_buffer_offset_` here.
         pending_write_buffer_offset_ = consumed;
@@ -1657,6 +1697,17 @@ void URLLoader::DidRead(int num_bytes,
 
   size_t new_data_offset = pending_write_buffer_offset_;
   MaybeCollectDurableMessage(new_data_offset, num_bytes);
+
+  // The body is still served even when the client asked for it to be dropped,
+  // so it still belongs in the archive. These reads go to `discard_buffer_`
+  // rather than the mojo buffer, so MaybeCollectDurableMessage cannot see them.
+  // Reads into the SlopBucket are deliberately skipped here and archived when
+  // the bucket is drained, which is where they become observable in order.
+  if (warc_recorder_ && num_bytes > 0 && !into_slop_bucket &&
+      (options_ & mojom::kURLLoadOptionReadAndDiscardBody)) {
+    CollectWarcBodyBytes(
+        discard_buffer_->first(static_cast<size_t>(num_bytes)));
+  }
 
   if (num_bytes > 0) {
     if (!into_slop_bucket) {
@@ -1967,6 +2018,16 @@ void URLLoader::CancelRequest() {
 }
 
 void URLLoader::NotifyCompleted(int error_code) {
+  // Every terminal path funnels through here and DeleteSelf() follows shortly,
+  // so close the archive record now. A load that ended badly is still worth
+  // recording, but mark the payload as short so it is not mistaken for whole.
+  if (warc_recorder_) {
+    if (error_code != net::OK) {
+      warc_recorder_->SetTruncated("disconnect");
+    }
+    warc_recorder_->Finish();
+  }
+
   // Ensure sending the final upload progress message here, since
   // OnResponseCompleted can be called without OnResponseStarted on cancellation
   // or error cases.
@@ -2180,6 +2241,14 @@ void URLLoader::SetRawRequestHeadersAndNotify(
       header_array.push_back(std::move(pair));
     }
     DispatchOnRawRequest(std::move(header_array));
+  }
+
+  // Captured here rather than from the ResourceRequest because these are the
+  // headers as they actually go to the wire: post-BeforeSendHeaders, with
+  // cookies attached, in wire order.
+  if (warc_recorder_) {
+    warc_recorder_->SetTargetUrl(url_request_->url());
+    warc_recorder_->SetRequestHeaders(headers, url_request_->method());
   }
 
   raw_request_line_size_ = headers.request_line().size();
@@ -2638,18 +2707,69 @@ void URLLoader::ResetRawHeadersForRedirect() {
 
 void URLLoader::MaybeCollectDurableMessage(size_t new_data_offset,
                                            int num_bytes) {
-  if (!pending_write_ || !durable_message_writer_) {
+  if (!pending_write_) {
     return;
   }
 
   if (num_bytes <= 0) {
-    durable_message_writer_->MarkComplete();
+    if (durable_message_writer_) {
+      durable_message_writer_->MarkComplete();
+    }
     return;
   }
 
-  durable_message_writer_->AddBytes(base::as_byte_span(
+  const auto bytes = base::as_byte_span(
       base::span(*pending_write_)
-          .subspan(new_data_offset, static_cast<size_t>(num_bytes))));
+          .subspan(new_data_offset, static_cast<size_t>(num_bytes)));
+
+  if (durable_message_writer_) {
+    durable_message_writer_->AddBytes(bytes);
+  }
+  if (warc_recorder_) {
+    warc_recorder_->AddBodyBytes(bytes);
+  }
+}
+
+void URLLoader::CollectWarcBodyBytes(base::span<const uint8_t> bytes) {
+  if (warc_recorder_ && !bytes.empty()) {
+    warc_recorder_->AddBodyBytes(bytes);
+  }
+}
+
+void URLLoader::FeedWarcResponseMetadata() {
+  if (!warc_recorder_) {
+    return;
+  }
+
+  // Prefer the headers the server actually sent over the possibly
+  // cache-merged ones on the request.
+  warc_recorder_->SetResponseHeaders(raw_response_headers_
+                                         ? raw_response_headers_
+                                         : url_request_->response_headers());
+
+  const net::HttpResponseInfo& info = url_request_->response_info();
+  warc_recorder_->SetRemoteEndpoint(info.remote_endpoint);
+
+  // HTTP/2 and HTTP/3 never carry a literal header block, so the recorded
+  // headers for them are a reconstruction. Note which protocol was used so a
+  // reader can tell captured bytes from reconstructed ones.
+  if (info.DidUseQuic()) {
+    warc_recorder_->SetProtocol("h3");
+  } else if (info.was_fetched_via_spdy) {
+    warc_recorder_->SetProtocol("h2");
+  } else {
+    warc_recorder_->SetProtocol("http/1.1");
+  }
+}
+
+void URLLoader::StartNextWarcExchange() {
+  if (!warc_recorder_factory_) {
+    return;
+  }
+  if (warc_recorder_) {
+    warc_recorder_->Finish();
+  }
+  warc_recorder_ = warc_recorder_factory_.Run();
 }
 
 void URLLoader::PerformSyntheticResponseFallback() {

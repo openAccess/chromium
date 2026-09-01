@@ -35,6 +35,7 @@
 #include "services/network/shared_dictionary/shared_dictionary_access_checker.h"
 #include "services/network/trust_tokens/trust_token_request_helper_factory.h"
 #include "services/network/url_loader.h"
+#include "services/network/warc_recorder.h"
 #include "services/network/web_bundle/web_bundle_url_loader_factory.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -380,6 +381,23 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
             resource_request.devtools_request_id.value());
   }
 
+  // When WARC recording is on, hand the loader a factory rather than a single
+  // recorder: a redirect chain is archived as one record pair per hop, so the
+  // loader mints a new recorder each time it follows one.
+  WarcExchangeRecorderFactory warc_recorder_factory;
+  if (context_->network_service() &&
+      context_->network_service()->warc_recorder()) {
+    warc_recorder_factory = base::BindRepeating(
+        [](base::WeakPtr<NetworkService> service)
+            -> std::unique_ptr<WarcExchangeRecorder> {
+          if (!service || !service->warc_recorder()) {
+            return nullptr;
+          }
+          return service->warc_recorder()->CreateExchangeRecorder();
+        },
+        context_->network_service()->GetWeakPtr());
+  }
+
   mojo::ScopedDataPipeProducerHandle provided_response_body_stream;
   if (base::FeatureList::IsEnabled(
           features::kURLLoaderUseProvidedResponseBodyStream) &&
@@ -404,7 +422,7 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
       std::move(devtools_observer), std::move(device_bound_session_observer),
       std::move(accept_ch_frame_observer),
       *context_->GetSharedResourceChecker(),
-      std::move(maybe_durable_message_writer),
+      std::move(maybe_durable_message_writer), std::move(warc_recorder_factory),
       std::move(provided_response_body_stream));
 
   cors_url_loader_factory_->OnURLLoaderCreated(std::move(loader));
