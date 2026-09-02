@@ -1506,6 +1506,85 @@ TEST_F(URLLoaderTest, Empty) {
   LoadAndCompareFile("empty.html");
 }
 
+// On a revalidation the server sends a bare 304 and net serves the body from
+// cache. Recording the raw 304 beside those bytes produced a record that
+// contradicts itself -- a status forbidding a body, above one, with a payload
+// digest over content the headers deny exists. The client received the merged
+// entity, and that is what belongs in the archive.
+TEST_F(URLLoaderTest, WarcRecordsMergedEntityOnRevalidation) {
+  const std::string body = "revalidated body";
+
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&body](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        // Second time around the loader revalidates, and the server confirms
+        // the cached copy is still good.
+        if (request.headers.contains("If-None-Match")) {
+          return std::make_unique<net::test_server::RawHttpResponse>(
+              "HTTP/1.1 304 Not Modified\r\n"
+              "ETag: \"v1\"\r\n"
+              "Cache-Control: max-age=0, must-revalidate\r\n",
+              "");
+        }
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        response->set_content(body);
+        response->set_content_type("text/plain");
+        response->AddCustomHeader("ETag", "\"v1\"");
+        response->AddCustomHeader("Cache-Control",
+                                  "max-age=0, must-revalidate");
+        return response;
+      }));
+  ASSERT_TRUE(server.Start());
+
+  const GURL url = server.GetURL("/revalidated.txt");
+
+  // Populate the cache with a loader and client of its own; the fixture's
+  // client services a single load per test, and only the second load -- the
+  // revalidation -- is the one worth recording.
+  {
+    ResourceRequest request = CreateResourceRequest("GET", url);
+    TestURLLoaderClient warm_client;
+    mojo::Remote<mojom::URLLoader> warm_remote;
+    std::unique_ptr<URLLoader> warm_loader;
+    base::RunLoop delete_run_loop;
+    URLLoaderOptions warm_options;
+    warm_loader = warm_options.MakeURLLoader(
+        context(), DeleteLoaderCallback(&delete_run_loop, &warm_loader),
+        warm_remote.BindNewPipeAndPassReceiver(), request,
+        warm_client.CreateRemote());
+    warm_client.RunUntilComplete();
+    delete_run_loop.Run();
+    ASSERT_EQ(net::OK, warm_client.completion_status().error_code);
+  }
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath archive_path =
+      temp_dir.GetPath().AppendASCII("revalidate.warc");
+  std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(archive_path);
+
+  // Second load revalidates and is served from cache.
+  ResourceRequest request = CreateResourceRequest("GET", url);
+  std::string second;
+  ASSERT_EQ(net::OK, LoadRequest(request, &second));
+  ASSERT_EQ(body, second);
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
+
+  std::string archive;
+  ASSERT_TRUE(base::ReadFileToString(archive_path, &archive));
+
+  // The body reached the client, so the record must describe an entity that
+  // has one -- never a 304.
+  ASSERT_NE(archive.find(body), std::string::npos)
+      << "the revalidated body was not archived at all";
+  EXPECT_EQ(archive.find("HTTP/1.1 304"), std::string::npos)
+      << "archived a 304 status line above a body";
+  EXPECT_NE(archive.find("HTTP/1.1 200"), std::string::npos);
+}
+
 // net refuses to skip decoding for a response carrying `use-as-dictionary`,
 // because the shared-dictionary write path needs an uncompressed dictionary
 // (URLRequestHttpJob::SetUpSourceStream). A recorder that assumed its request

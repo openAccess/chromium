@@ -71,6 +71,7 @@
 #include "net/http/http_connection_info.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
+#include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
 #include "net/http/structured_headers.h"
 #include "net/log/net_log_source_type.h"
@@ -2749,11 +2750,18 @@ void URLLoader::FeedWarcResponseMetadata(const mojom::URLResponseHead& head) {
   warc_recorder_->SetBodyIsWireFormat(
       !head.client_side_content_decoding_types.empty());
 
-  // Prefer the headers the server actually sent over the possibly
-  // cache-merged ones on the request.
-  warc_recorder_->SetResponseHeaders(raw_response_headers_
-                                         ? raw_response_headers_
-                                         : url_request_->response_headers());
+  // Prefer the headers the server actually sent over the possibly cache-merged
+  // ones on the request -- except on a revalidation, where the server sends a
+  // bare 304 and net serves the body from cache. Recording that 304 beside
+  // those bytes yields a record contradicting itself: a status that forbids a
+  // body, sitting above one, with a payload digest over content the headers
+  // say does not exist. What the client actually received is the merged
+  // entity, which is what response_headers() holds, so record that.
+  scoped_refptr<const net::HttpResponseHeaders> headers = raw_response_headers_;
+  if (!headers || headers->response_code() == net::HTTP_NOT_MODIFIED) {
+    headers = url_request_->response_headers();
+  }
+  warc_recorder_->SetResponseHeaders(std::move(headers));
 
   const net::HttpResponseInfo& info = url_request_->response_info();
   warc_recorder_->SetRemoteEndpoint(info.remote_endpoint);
