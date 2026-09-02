@@ -151,6 +151,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
 
     // Ceiling on a single buffered response body.
     size_t max_body_bytes = 32u * 1024 * 1024;
+
+    // Ceiling on a body buffered while completing a ranged resource. A record
+    // must state its length before its block, so the whole resource is held in
+    // memory until it can be written, and these are whole videos rather than
+    // page subresources. The limit exists only to keep a runaway fetch from
+    // exhausting memory -- anything over it is still archived, marked
+    // "WARC-Truncated: length" -- so it is set far above any resource a page
+    // realistically embeds.
+    size_t max_completion_body_bytes = 512u * 1024 * 1024;
   };
 
   // `file` must already be open for writing: the network service is sandboxed
@@ -168,6 +177,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
 
   // Returns a recorder for one exchange.
   std::unique_ptr<WarcExchangeRecorder> CreateExchangeRecorder();
+
+  // Returns a recorder for a whole-resource fetch made to complete a resource
+  // the page only requested ranges of, which is allowed to buffer far more
+  // than an ordinary exchange.
+  std::unique_ptr<WarcExchangeRecorder> CreateCompletionRecorder();
 
   // Writes the warcinfo record that describes this capture. Called once, before
   // any exchange records.

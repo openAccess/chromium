@@ -347,6 +347,7 @@ URLLoader::URLLoader(
     SharedResourceChecker& shared_resource_checker,
     std::unique_ptr<DevtoolsDurableMessageWriter> maybe_durable_message_writer,
     WarcExchangeRecorderFactory warc_recorder_factory,
+    WarcRangeCompletionCallback warc_range_completion,
     mojo::ScopedDataPipeProducerHandle response_body_stream)
     : url_request_context_(context.GetUrlRequestContext()),
       network_context_client_(context.GetNetworkContextClient()),
@@ -431,7 +432,8 @@ URLLoader::URLLoader(
                     ->expected_response_headers_for_synthetic_response
               : nullptr),
       durable_message_writer_(std::move(maybe_durable_message_writer)),
-      warc_recorder_factory_(std::move(warc_recorder_factory)) {
+      warc_recorder_factory_(std::move(warc_recorder_factory)),
+      warc_range_completion_(std::move(warc_range_completion)) {
   DCHECK(delete_callback_);
 
   if (warc_recorder_factory_) {
@@ -2749,6 +2751,15 @@ void URLLoader::FeedWarcResponseMetadata(const mojom::URLResponseHead& head) {
   // which is precisely the record no reader can interpret.
   warc_recorder_->SetBodyIsWireFormat(
       !head.client_side_content_decoding_types.empty());
+
+  // A 206 is a fragment of something larger. Archiving fragments leaves the
+  // resource itself absent -- a player fetches a file's head and its trailing
+  // index and never transfers the middle, so the stored partials cannot be
+  // reassembled into anything. Ask for the whole resource separately.
+  if (warc_range_completion_ && head.headers &&
+      head.headers->response_code() == net::HTTP_PARTIAL_CONTENT) {
+    warc_range_completion_.Run(*url_request_);
+  }
 
   // Prefer the headers the server actually sent over the possibly cache-merged
   // ones on the request -- except on a revalidation, where the server sends a

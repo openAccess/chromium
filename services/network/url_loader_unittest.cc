@@ -142,6 +142,7 @@
 #include "services/network/trust_tokens/trust_token_request_helper.h"
 #include "services/network/trust_tokens/trust_token_request_helper_factory.h"
 #include "services/network/url_request_context_owner.h"
+#include "services/network/warc_range_completer.h"
 #include "services/network/warc_recorder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -731,10 +732,12 @@ struct URLLoaderOptions {
         ObserverWrapper(std::move(device_bound_session_observer)),
         std::move(accept_ch_frame_observer), *shared_resource_checker,
         std::move(durable_message_writer), std::move(warc_recorder_factory),
+        std::move(warc_range_completion),
         std::move(provided_response_body_stream));
   }
 
   WarcExchangeRecorderFactory warc_recorder_factory;
+  WarcRangeCompletionCallback warc_range_completion;
   int32_t options = mojom::kURLLoadOptionNone;
   base::WeakPtr<mojom::URLLoaderClient> sync_url_loader_client;
   net::NetworkTrafficAnnotationTag traffic_annotation =
@@ -986,6 +989,7 @@ class URLLoaderTest : public testing::Test {
     url_loader_options.durable_message_writer =
         make_unique<MultipleDurableMessageWriterImpl>(durable_messages_);
     url_loader_options.warc_recorder_factory = warc_recorder_factory_;
+    url_loader_options.warc_range_completion = warc_range_completion_;
     url_loader = url_loader_options.MakeURLLoader(
         context(), DeleteLoaderCallback(&delete_run_loop, &url_loader),
         loader.BindNewPipeAndPassReceiver(), request, client_.CreateRemote());
@@ -1058,6 +1062,20 @@ class URLLoaderTest : public testing::Test {
     warc_recorder_factory_ = base::BindLambdaForTesting(
         [raw = recorder.get()]() -> std::unique_ptr<WarcExchangeRecorder> {
           return raw->CreateExchangeRecorder();
+        });
+    return recorder;
+  }
+
+  // Also wires up range completion, which production code hangs off the
+  // NetworkContext.
+  std::unique_ptr<WarcRecorder> StartWarcRecordingWithRangeCompletion(
+      const base::FilePath& path) {
+    std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(path);
+    warc_range_completer_ =
+        std::make_unique<WarcRangeCompleter>(url_request_context_.get());
+    warc_range_completion_ = base::BindLambdaForTesting(
+        [this, raw = recorder.get()](const net::URLRequest& partial) {
+          warc_range_completer_->CompleteIfNeeded(partial, raw);
         });
     return recorder;
   }
@@ -1372,6 +1390,8 @@ class URLLoaderTest : public testing::Test {
 
   // WARC recording, off unless a test installs a factory.
   WarcExchangeRecorderFactory warc_recorder_factory_;
+  WarcRangeCompletionCallback warc_range_completion_;
+  std::unique_ptr<WarcRangeCompleter> warc_range_completer_;
   // Drain the response body only after the loader has parked on a full pipe.
   bool delay_body_read_ = false;
   // Whether the last load actually went through the SlopBucket.
@@ -1504,6 +1524,147 @@ TEST_F(URLLoaderTest, Basic) {
 
 TEST_F(URLLoaderTest, Empty) {
   LoadAndCompareFile("empty.html");
+}
+
+// A page that asks only for ranges leaves the resource itself out of the
+// archive: a media player reads a file's head and its trailing index and never
+// transfers the middle, so the stored partials cannot be reassembled into
+// anything. The recorder fetches the whole resource separately, as its own
+// exchange, so the archive holds a complete copy.
+TEST_F(URLLoaderTest, WarcCompletesResourcesFetchedByRange) {
+  // Distinctive middle the ranged request never asks for; if it appears in the
+  // archive it can only have come from the completion fetch.
+  std::string full(4096, 'a');
+  const std::string marker = "MIDDLE_NEVER_RANGE_REQUESTED";
+  full.replace(2048, marker.size(), marker);
+
+  int range_requests = 0;
+  int full_requests = 0;
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        if (request.relative_url.find("/ranged") == std::string::npos) {
+          return nullptr;
+        }
+        auto it = request.headers.find("Range");
+        if (it == request.headers.end()) {
+          ++full_requests;
+          auto response =
+              std::make_unique<net::test_server::BasicHttpResponse>();
+          response->set_content(full);
+          response->set_content_type("video/mp4");
+          return response;
+        }
+        ++range_requests;
+        // Serve only the first 64 bytes, as a player probing a container would
+        // receive.
+        const size_t kHeadBytes = 64;
+        return std::make_unique<net::test_server::RawHttpResponse>(
+            base::StrCat({"HTTP/1.1 206 Partial Content\r\n"
+                          "Content-Type: video/mp4\r\n"
+                          "Content-Range: bytes 0-",
+                          base::NumberToString(kHeadBytes - 1), "/",
+                          base::NumberToString(full.size()),
+                          "\r\n"
+                          "Content-Length: ",
+                          base::NumberToString(kHeadBytes), "\r\n"}),
+            full.substr(0, kHeadBytes));
+      }));
+  ASSERT_TRUE(server.Start());
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath archive_path =
+      temp_dir.GetPath().AppendASCII("ranged.warc");
+  std::unique_ptr<WarcRecorder> recorder =
+      StartWarcRecordingWithRangeCompletion(archive_path);
+
+  ResourceRequest request =
+      CreateResourceRequest("GET", server.GetURL("/ranged.mp4"));
+  request.headers.SetHeader(net::HttpRequestHeaders::kRange, "bytes=0-63");
+  std::string body;
+  ASSERT_EQ(net::OK, LoadRequest(request, &body));
+  EXPECT_EQ(64u, body.size());
+
+  // The completion runs behind the page's load; wait for it to land.
+  while (warc_range_completer_->finished_for_testing() == 0) {
+    base::RunLoop loop;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, loop.QuitClosure(), base::Milliseconds(5));
+    loop.Run();
+  }
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
+
+  std::string archive;
+  ASSERT_TRUE(base::ReadFileToString(archive_path, &archive));
+
+  EXPECT_EQ(1, range_requests);
+  EXPECT_EQ(1, full_requests) << "the resource was not completed";
+  // Both the fragment the page received and the complete copy are archived.
+  EXPECT_NE(archive.find("HTTP/1.1 206"), std::string::npos);
+  EXPECT_NE(archive.find("HTTP/1.1 200"), std::string::npos);
+  EXPECT_NE(archive.find(marker), std::string::npos)
+      << "the archive holds only fragments, not the resource";
+}
+
+// A page asks for many ranges of the same file; it must only be completed once.
+TEST_F(URLLoaderTest, WarcCompletesEachRangedResourceOnlyOnce) {
+  const std::string full(4096, 'b');
+  int full_requests = 0;
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        if (request.relative_url.find("/ranged") == std::string::npos) {
+          return nullptr;
+        }
+        if (request.headers.find("Range") == request.headers.end()) {
+          ++full_requests;
+          auto response =
+              std::make_unique<net::test_server::BasicHttpResponse>();
+          response->set_content(full);
+          return response;
+        }
+        return std::make_unique<net::test_server::RawHttpResponse>(
+            base::StrCat({"HTTP/1.1 206 Partial Content\r\n"
+                          "Content-Range: bytes 0-63/",
+                          base::NumberToString(full.size()),
+                          "\r\n"
+                          "Content-Length: 64\r\n"}),
+            full.substr(0, 64));
+      }));
+  ASSERT_TRUE(server.Start());
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  std::unique_ptr<WarcRecorder> recorder =
+      StartWarcRecordingWithRangeCompletion(
+          temp_dir.GetPath().AppendASCII("once.warc"));
+
+  const GURL url = server.GetURL("/ranged.mp4");
+  net::URLRequestContext* context = url_request_context();
+  // Two ranged loads of the same URL, driven straight through the completer.
+  for (int i = 0; i < 2; ++i) {
+    std::unique_ptr<net::URLRequest> probe = context->CreateRequest(
+        url, net::IDLE, nullptr, TRAFFIC_ANNOTATION_FOR_TESTS,
+        net::handles::kInvalidNetworkHandle);
+    warc_range_completer_->CompleteIfNeeded(*probe, recorder.get());
+  }
+  EXPECT_EQ(1u, warc_range_completer_->started_for_testing());
+
+  while (warc_range_completer_->finished_for_testing() == 0) {
+    base::RunLoop loop;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, loop.QuitClosure(), base::Milliseconds(5));
+    loop.Run();
+  }
+  EXPECT_EQ(1, full_requests);
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
 }
 
 // On a revalidation the server sends a bare 304 and net serves the body from

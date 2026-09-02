@@ -82,6 +82,7 @@
 #include "services/network/restricted_cookie_manager.h"
 #include "services/network/socket_factory.h"
 #include "services/network/url_request_context_owner.h"
+#include "services/network/warc_range_completer.h"
 #include "services/network/web_bundle/web_bundle_manager.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "url/gurl.h"
@@ -743,6 +744,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
 
   WebBundleManager& GetWebBundleManager() { return web_bundle_manager_; }
 
+  // Completes resources a page only requested ranges of, while WARC recording
+  // is active. Owned here rather than on the NetworkService because an
+  // in-flight net::URLRequest may not outlive the URLRequestContext that
+  // created it.
+  WarcRangeCompleter& GetWarcRangeCompleter();
+
+  base::WeakPtr<NetworkContext> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
   SharedDictionaryManager* GetSharedDictionaryManager() {
     return shared_dictionary_manager_.get();
   }
@@ -1121,6 +1132,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   // Each network context holds its own WebBundleManager, which
   // manages the lifetiem of a WebBundleURLLoaderFactory object.
   WebBundleManager web_bundle_manager_;
+
+  // Created on first use; only WARC recording needs it.
+  std::unique_ptr<WarcRangeCompleter> warc_range_completer_;
 
   // The ohttp_handler_ needs to be destroyed before cookie_manager_, since it
   // depends on it indirectly through this context.

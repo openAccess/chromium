@@ -398,6 +398,24 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
         context_->network_service()->GetWeakPtr());
   }
 
+  // Resources the page only takes ranges of are fetched whole on the side, so
+  // the archive holds a complete copy. The completer lives on the
+  // NetworkContext because its fetches must not outlive the URLRequestContext.
+  WarcRangeCompletionCallback warc_range_completion;
+  if (warc_recorder_factory) {
+    warc_range_completion = base::BindRepeating(
+        [](base::WeakPtr<NetworkService> service,
+           base::WeakPtr<NetworkContext> context,
+           const net::URLRequest& partial) {
+          if (!service || !context) {
+            return;
+          }
+          context->GetWarcRangeCompleter().CompleteIfNeeded(
+              partial, service->warc_recorder());
+        },
+        context_->network_service()->GetWeakPtr(), context_->GetWeakPtr());
+  }
+
   mojo::ScopedDataPipeProducerHandle provided_response_body_stream;
   if (base::FeatureList::IsEnabled(
           features::kURLLoaderUseProvidedResponseBodyStream) &&
@@ -423,6 +441,7 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
       std::move(accept_ch_frame_observer),
       *context_->GetSharedResourceChecker(),
       std::move(maybe_durable_message_writer), std::move(warc_recorder_factory),
+      std::move(warc_range_completion),
       std::move(provided_response_body_stream));
 
   cors_url_loader_factory_->OnURLLoaderCreated(std::move(loader));

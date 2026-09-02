@@ -116,6 +116,13 @@ class WarcExchangeRecorder;
 using WarcExchangeRecorderFactory =
     base::RepeatingCallback<std::unique_ptr<WarcExchangeRecorder>()>;
 
+// Asks for a whole-resource fetch of something the page requested only a range
+// of, so the archive holds a complete copy rather than fragments. Null when
+// WARC recording is off. Deduplication is the callee's job, since a page asks
+// for many ranges of the same file.
+using WarcRangeCompletionCallback =
+    base::RepeatingCallback<void(const net::URLRequest&)>;
+
 class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
     : public mojom::URLLoader,
       public net::URLRequest::Delegate,
@@ -193,6 +200,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
       std::unique_ptr<DevtoolsDurableMessageWriter>
           maybe_durable_message_writer,
       WarcExchangeRecorderFactory warc_recorder_factory,
+      WarcRangeCompletionCallback warc_range_completion,
       mojo::ScopedDataPipeProducerHandle response_body_stream = {});
 
   URLLoader(const URLLoader&) = delete;
@@ -748,6 +756,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
   // again for each redirect hop.
   WarcExchangeRecorderFactory warc_recorder_factory_;
   std::unique_ptr<WarcExchangeRecorder> warc_recorder_;
+
+  // Invoked when a response turns out to be a fragment of a larger resource.
+  WarcRangeCompletionCallback warc_range_completion_;
 
   // Whether Sec-Private-Verification-Token was removed from this request
   // because cookies were included.

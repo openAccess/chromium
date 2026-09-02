@@ -312,6 +312,12 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder() {
       writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes, warcinfo_id_);
 }
 
+std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder() {
+  return std::make_unique<WarcExchangeRecorder>(
+      writer_weak_factory_.GetWeakPtr(), limits_.max_completion_body_bytes,
+      warcinfo_id_);
+}
+
 void WarcRecorder::WriteWarcinfo(const std::string& filename) {
   warc::RecordHeader header;
   header.type = warc::RecordType::kWarcinfo;

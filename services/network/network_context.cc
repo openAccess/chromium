@@ -4191,4 +4191,12 @@ void NetworkContext::OnLogicalFilterRemoved(
   UpdatePersistenceQueueOrSave(filter, &pending_removals_);
 }
 
+WarcRangeCompleter& NetworkContext::GetWarcRangeCompleter() {
+  if (!warc_range_completer_) {
+    warc_range_completer_ =
+        std::make_unique<WarcRangeCompleter>(url_request_context_);
+  }
+  return *warc_range_completer_;
+}
+
 }  // namespace network
