@@ -655,6 +655,7 @@ source_set("tests") {
     "//sql:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/zlib/google:compression_utils",
   ]
 
   if (is_ct_supported) {

@@ -75,6 +75,21 @@ std::string RewriteHeadersForDecodedBody(std::string_view head,
   return out;
 }
 
+// Whether `head` claims an encoding that a decoded payload would contradict.
+// A response that declared none needs no correction even though the net stack
+// nominally did the decoding, and storing its header block verbatim is
+// strictly more faithful than reserializing it.
+bool DeclaresTransferEncoding(std::string_view head) {
+  for (std::string_view line : base::SplitStringPiece(
+           head, "\r\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    if (StartsWithFieldName(line, "content-encoding") ||
+        StartsWithFieldName(line, "transfer-encoding")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string FindHeader(const net::HttpRawRequestHeaders& headers,
                        std::string_view name) {
   for (const auto& [key, value] : headers.headers()) {
@@ -264,11 +279,13 @@ void WarcExchangeRecorder::EmitRecords() {
     header.concurrent_to = request_id;
 
     // When the body reaching us was already decoded, the recorded headers must
-    // be corrected to describe what is actually stored.
-    const std::string head =
-        body_is_wire_format_
-            ? response_head_
-            : RewriteHeadersForDecodedBody(response_head_, body_.size());
+    // be corrected to describe what is actually stored -- but only if they
+    // claim an encoding in the first place.
+    const bool needs_rewrite =
+        !body_is_wire_format_ && DeclaresTransferEncoding(response_head_);
+    const std::string head = needs_rewrite ? RewriteHeadersForDecodedBody(
+                                                 response_head_, body_.size())
+                                           : response_head_;
 
     std::vector<uint8_t> block(head.begin(), head.end());
     const size_t payload_offset = block.size();

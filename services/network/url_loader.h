@@ -496,7 +496,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
 
   // Hands the current exchange's response headers, peer address and protocol
   // to the WARC recorder. No-op when recording is off.
-  void FeedWarcResponseMetadata();
+  void FeedWarcResponseMetadata(const mojom::URLResponseHead& head);
 
   // Adds response body bytes to the WARC record. Body bytes reach the client by
   // several routes — straight into the mojo buffer, by way of the SlopBucket

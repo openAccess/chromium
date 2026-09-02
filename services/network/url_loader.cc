@@ -545,17 +545,12 @@ URLLoader::URLLoader(
   // Content-Encoding recorded beside it. Asking net to skip decoding gives us
   // those bytes -- but it also makes the client responsible for decoding, which
   // only happens when renderer-side content decoding is enabled. --warc-output
-  // enables it (see GetSwitchDependentFeatureOverrides), so this is normally
-  // true; when the command line disables the feature outright, leave decoding
-  // in place and let the recorder store decoded bytes with the encoding headers
-  // rewritten to match, which is honest if less faithful.
-  if (warc_recorder_) {
-    const bool client_can_decode =
-        base::FeatureList::IsEnabled(features::kRendererSideContentDecoding);
-    if (client_can_decode) {
-      url_request_->set_client_side_content_decoding_enabled(true);
-    }
-    warc_recorder_->SetBodyIsWireFormat(client_can_decode);
+  // enables it (see GetSwitchDependentFeatureOverrides), so the request is
+  // normally granted; whether it actually was is decided per response, in
+  // FeedWarcResponseMetadata().
+  if (warc_recorder_ &&
+      base::FeatureList::IsEnabled(features::kRendererSideContentDecoding)) {
+    url_request_->set_client_side_content_decoding_enabled(true);
   }
 
   if (context.ShouldRequireIsolationInfo()) {
@@ -1012,7 +1007,7 @@ void URLLoader::OnReceivedRedirect(net::URLRequest* url_request,
   DispatchOnRawResponse();
   // Archive the redirect response itself; each hop of a chain is its own
   // record pair, and the 3xx is part of what was served.
-  FeedWarcResponseMetadata();
+  FeedWarcResponseMetadata(*response);
   ReportFlaggedResponseCookies(false);
 
   // Enforce the Cross-Origin-Resource-Policy (CORP) header.
@@ -1201,7 +1196,7 @@ void URLLoader::OnResponseStarted(net::URLRequest* url_request, int net_error) {
 
   response_ = BuildResponseHead();
   DispatchOnRawResponse();
-  FeedWarcResponseMetadata();
+  FeedWarcResponseMetadata(*response_);
 
   if (expected_response_headers_for_synthetic_response &&
       !CheckHeaderConsistencyForSyntheticResponse(
@@ -2738,10 +2733,21 @@ void URLLoader::CollectWarcBodyBytes(base::span<const uint8_t> bytes) {
   }
 }
 
-void URLLoader::FeedWarcResponseMetadata() {
+void URLLoader::FeedWarcResponseMetadata(const mojom::URLResponseHead& head) {
   if (!warc_recorder_) {
     return;
   }
+
+  // net reports the encodings it declined to apply, so a non-empty list means
+  // this body really does arrive in its wire form. This cannot be inferred
+  // from whether client-side decoding was requested: net decodes anyway when
+  // the response carries `use-as-dictionary`, because the shared-dictionary
+  // write path requires an uncompressed dictionary (see
+  // URLRequestHttpJob::SetUpSourceStream). Assuming the request was honoured
+  // stored a decoded payload beneath headers still claiming Content-Encoding,
+  // which is precisely the record no reader can interpret.
+  warc_recorder_->SetBodyIsWireFormat(
+      !head.client_side_content_decoding_types.empty());
 
   // Prefer the headers the server actually sent over the possibly
   // cache-merged ones on the request.

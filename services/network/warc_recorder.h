@@ -88,11 +88,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   // Whether AddBodyBytes() will receive the payload in its wire form, still
   // carrying whatever transfer encoding the server applied.
   //
-  // When false the body has already been decoded by the network stack, and the
-  // recorded header block is rewritten at emit time to drop Content-Encoding
-  // and restate Content-Length. That loses byte fidelity, but the alternative —
-  // storing a decoded payload beneath a header claiming it is gzipped — yields
-  // a record no reader can correctly interpret.
+  // This must reflect what the network stack actually did for this response,
+  // not what was asked of it: net declines to skip decoding in cases the
+  // caller cannot predict, such as a response carrying `use-as-dictionary`.
+  //
+  // When false the body has already been decoded by the network stack, and a
+  // recorded header block that claims an encoding is rewritten at emit time to
+  // drop Content-Encoding and restate Content-Length. That loses byte
+  // fidelity, but the alternative — storing a decoded payload beneath a header
+  // claiming it is gzipped — yields a record no reader can correctly
+  // interpret.
   void SetBodyIsWireFormat(bool is_wire_format);
 
   // Response body bytes, in order.

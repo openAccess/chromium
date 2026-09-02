@@ -145,6 +145,7 @@
 #include "services/network/warc_recorder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/zlib/google/compression_utils.h"
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
 
@@ -1503,6 +1504,67 @@ TEST_F(URLLoaderTest, Basic) {
 
 TEST_F(URLLoaderTest, Empty) {
   LoadAndCompareFile("empty.html");
+}
+
+// net refuses to skip decoding for a response carrying `use-as-dictionary`,
+// because the shared-dictionary write path needs an uncompressed dictionary
+// (URLRequestHttpJob::SetUpSourceStream). A recorder that assumed its request
+// to skip decoding had been honoured stored the decoded payload beneath
+// headers still advertising Content-Encoding -- a record no WARC reader can
+// interpret, and one that looks perfectly well-formed from the outside.
+TEST_F(URLLoaderTest, WarcRewritesHeadersWhenNetDecodesDictionaryResponse) {
+  base::test::ScopedFeatureList feature_list(
+      features::kRendererSideContentDecoding);
+
+  const std::string decoded = "dictionary payload, stored decoded";
+  std::string encoded;
+  ASSERT_TRUE(compression::GzipCompress(decoded, &encoded));
+
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&encoded](const net::test_server::HttpRequest&)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        // Raw, because `Use-As-Dictionary` is the header that makes net
+        // decode regardless of what the loader asked for.
+        return std::make_unique<net::test_server::RawHttpResponse>(
+            base::StrCat({"HTTP/1.1 200 OK\r\n"
+                          "Content-Type: text/plain\r\n"
+                          "Content-Encoding: gzip\r\n"
+                          "Use-As-Dictionary: match=\"/x/*\"\r\n"
+                          "Content-Length: ",
+                          base::NumberToString(encoded.size()), "\r\n"}),
+            encoded);
+      }));
+  ASSERT_TRUE(server.Start());
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath archive_path =
+      temp_dir.GetPath().AppendASCII("dict.warc");
+
+  std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(archive_path);
+
+  ResourceRequest request =
+      CreateResourceRequest("GET", server.GetURL("/dict.txt"));
+  std::string body;
+  ASSERT_EQ(net::OK, LoadRequest(request, &body));
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
+
+  std::string archive;
+  ASSERT_TRUE(base::ReadFileToString(archive_path, &archive));
+
+  // net decoded, so the stored payload is plaintext and the header block must
+  // no longer claim gzip.
+  EXPECT_NE(archive.find(decoded), std::string::npos);
+  EXPECT_EQ(archive.find("Content-Encoding: gzip"), std::string::npos);
+  // The declaration that provoked this is still part of what was served, so it
+  // stays; only the claims contradicted by the stored bytes are corrected.
+  EXPECT_NE(archive.find("Use-As-Dictionary:"), std::string::npos);
+  EXPECT_NE(archive.find(base::StrCat(
+                {"Content-Length: ", base::NumberToString(decoded.size())})),
+            std::string::npos);
 }
 
 // Body bytes reach the client by more than one route. When the mojo data pipe
