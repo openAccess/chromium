@@ -100,6 +100,18 @@ GetSwitchDependentFeatureOverrides(const base::CommandLine& command_line) {
        std::cref(net::features::kThirdPartyStoragePartitioning),
        base::FeatureList::OVERRIDE_ENABLE_FEATURE},
 
+      // Override for --warc-output. A WARC response record must hold the
+      // body exactly as it arrived, still in its transfer encoding, so that it
+      // agrees with the Content-Encoding stored beside it. The network service
+      // only leaves bodies encoded when the client is prepared to decode them
+      // itself, which is what this feature arranges. An explicit
+      // --disable-features on the command line still wins, and the recorder
+      // then falls back to storing decoded bodies with their encoding headers
+      // rewritten to match.
+      {network::switches::kWarcOutput,
+       std::cref(network::features::kRendererSideContentDecoding),
+       base::FeatureList::OVERRIDE_ENABLE_FEATURE},
+
       // Overrides for headless
       {::switches::kHeadless, std::cref(blink::features::kPaintHolding),
        base::FeatureList::OVERRIDE_DISABLE_FEATURE},

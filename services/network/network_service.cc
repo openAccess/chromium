@@ -1361,14 +1361,17 @@ void NetworkService::StartWarcRecording(base::File file,
   }
 
   // Whether payloads can be stored exactly as they arrived depends on the
-  // client being willing to decode them itself. Say so plainly rather than
-  // letting a capture look byte-faithful when it is not.
+  // client being willing to decode them itself. --warc-output turns that on by
+  // itself, so reaching this branch means the command line disabled it
+  // explicitly. Say so plainly rather than letting a capture look
+  // byte-faithful when it is not.
   if (!base::FeatureList::IsEnabled(features::kRendererSideContentDecoding)) {
     LOG(WARNING)
-        << "WARC recording: response bodies will be stored decoded, with "
-           "Content-Encoding and Content-Length rewritten to match. For "
-           "byte-faithful captures, also pass "
-           "--enable-features=RendererSideContentDecoding.";
+        << "WARC recording: RendererSideContentDecoding is disabled, so "
+           "response bodies will be stored decoded, with Content-Encoding and "
+           "Content-Length rewritten to match. --warc-output enables that "
+           "feature on its own, so something on the command line is turning "
+           "it off.";
   }
 
   warc_recorder_ = std::make_unique<WarcRecorder>(

@@ -70,11 +70,13 @@ const char kSSLKeyLogFile[] = "ssl-key-log-file";
 // file contains everything the browsing session sent and received, including
 // credentials and personal data.
 //
-// For byte-faithful captures — payloads stored exactly as they arrived, still
-// compressed, matching their Content-Encoding — also pass
-// --enable-features=RendererSideContentDecoding. Without it the network stack
-// decodes bodies before they can be recorded, and the archive stores decoded
-// payloads with their encoding headers rewritten to match.
+// Payloads are stored exactly as they arrived, still compressed, matching
+// their Content-Encoding. Reaching those bytes requires the network stack to
+// leave bodies encoded for the client to decode, so this switch turns on
+// RendererSideContentDecoding by way of GetSwitchDependentFeatureOverrides.
+// Explicitly passing --disable-features=RendererSideContentDecoding still
+// wins; the archive is then still valid, but stores decoded payloads with
+// their encoding headers rewritten to match, and a warning says so.
 //
 // A path ending in ".gz" is written as a gzip-compressed archive, with each
 // record in a gzip member of its own. That is the layout WARC tooling expects

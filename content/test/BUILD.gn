@@ -2978,6 +2978,7 @@ test("content_unittests") {
     "../common/child_process_id_ffi_unittest.cc",
     "../common/color_parser_unittest.cc",
     "../common/common_param_traits_unittest.cc",
+    "../common/content_switch_dependent_feature_overrides_unittest.cc",
     "../common/content_switches_internal_unittest.cc",
     "../common/cursors/webcursor_unittest.cc",
     "../common/drop_data_unittest.cc",

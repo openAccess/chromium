@@ -544,9 +544,11 @@ URLLoader::URLLoader(
   // off the wire, still in its transfer encoding, so that it agrees with the
   // Content-Encoding recorded beside it. Asking net to skip decoding gives us
   // those bytes -- but it also makes the client responsible for decoding, which
-  // only happens when renderer-side content decoding is enabled. Where it is
-  // not, leave decoding in place and let the recorder store decoded bytes with
-  // the encoding headers rewritten to match, which is honest if less faithful.
+  // only happens when renderer-side content decoding is enabled. --warc-output
+  // enables it (see GetSwitchDependentFeatureOverrides), so this is normally
+  // true; when the command line disables the feature outright, leave decoding
+  // in place and let the recorder store decoded bytes with the encoding headers
+  // rewritten to match, which is honest if less faithful.
   if (warc_recorder_) {
     const bool client_can_decode =
         base::FeatureList::IsEnabled(features::kRendererSideContentDecoding);
