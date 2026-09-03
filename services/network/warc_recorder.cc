@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -305,7 +306,16 @@ WarcRecorder::WarcRecorder(base::File file,
       limits_(limits),
       writer_weak_factory_(writer_.get()) {}
 
-WarcRecorder::~WarcRecorder() = default;
+WarcRecorder::~WarcRecorder() {
+  // An archive that is quietly missing records is worse than one that failed
+  // outright, because nothing about the file looks wrong.
+  const uint64_t dropped = writer_->dropped_records();
+  if (dropped > 0) {
+    LOG(ERROR) << "WARC recording: " << dropped
+               << " record(s) dropped because the write queue could not keep "
+                  "up; the archive is incomplete.";
+  }
+}
 
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder() {
   return std::make_unique<WarcExchangeRecorder>(

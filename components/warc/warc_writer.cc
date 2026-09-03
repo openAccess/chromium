@@ -40,7 +40,14 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
 
     // Records are all-or-nothing: a partially written record would
     // desynchronize every reader for the rest of the file.
-    if (queued_bytes_ + record.size() > max_queued_bytes_) {
+    //
+    // The budget bounds the backlog, and is deliberately not tested against
+    // the incoming record's own size. Doing that would drop a record larger
+    // than the whole allowance no matter how idle the disk was, and the
+    // records that exceed it are the large resources most worth keeping. So
+    // the queue accepts whatever arrives while it is under budget and sheds
+    // only once it is not, overshooting by at most one record.
+    if (queued_bytes_ >= max_queued_bytes_) {
       ++dropped_records_;
       *should_post_flush = false;
       return false;

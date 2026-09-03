@@ -95,6 +95,20 @@ TEST_F(WarcWriterTest, DropsWholeRecordsWhenOverBudget) {
   EXPECT_EQ("12345678", ReadArchiveAfterFlush(writer));
 }
 
+TEST_F(WarcWriterTest, RecordLargerThanTheWholeBudgetIsStillWritten) {
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/8,
+                    WarcWriter::Compression::kNone);
+
+  // The budget bounds a backlog on a slow disk. Enforcing it against a single
+  // record would drop exactly the largest resources however idle the queue is
+  // -- a completed video is bigger than any sensible backlog allowance -- and
+  // drop them silently, which is the one thing an archive must never do.
+  const std::string big(64, 'x');
+  EXPECT_TRUE(writer.AddRecord(ToBytes(big)));
+  EXPECT_EQ(0u, writer.dropped_records());
+  EXPECT_EQ(big, ReadArchiveAfterFlush(writer));
+}
+
 TEST_F(WarcWriterTest, BudgetRecoversAfterDrain) {
   WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/8,
                     WarcWriter::Compression::kNone);
@@ -211,13 +225,14 @@ TEST_F(WarcWriterTest, GzipBudgetCountsUncompressedBytes) {
   WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/64,
                     WarcWriter::Compression::kGzipPerRecord);
 
-  // Highly compressible, so it would fit the budget several times over once
-  // deflated — but the budget bounds memory on the producing sequence, where
-  // the record is still uncompressed, so it must be measured undeflated.
-  EXPECT_FALSE(writer.AddRecord(ToBytes(std::string(4096, 'a'))));
-  EXPECT_EQ(1u, writer.dropped_records());
+  // Deflated this is a few dozen bytes, but the queue must hold it undeflated:
+  // the budget bounds memory on the producing sequence, not bytes on disk.
+  EXPECT_TRUE(writer.AddRecord(ToBytes(std::string(4096, 'a'))));
+  EXPECT_EQ(4096u, writer.queued_bytes());
 
-  EXPECT_EQ("", ReadArchiveAfterFlush(writer));
+  // Which leaves the backlog over budget, so the next record sheds.
+  EXPECT_FALSE(writer.AddRecord(ToBytes("next")));
+  EXPECT_EQ(1u, writer.dropped_records());
 }
 
 TEST_F(WarcWriterTest, GzipDestructionFlushesQueuedRecords) {
