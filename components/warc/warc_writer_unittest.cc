@@ -53,6 +53,16 @@ class WarcWriterTest : public testing::Test {
     return contents;
   }
 
+  // A stand-in for the spill file the browser hands the network service.
+  base::File MakeSpillFile(std::string_view contents) {
+    const base::FilePath path = temp_dir_.GetPath().AppendASCII("spill.bin");
+    base::File file(path, base::File::FLAG_CREATE_ALWAYS |
+                              base::File::FLAG_READ | base::File::FLAG_WRITE);
+    EXPECT_TRUE(file.IsValid());
+    EXPECT_TRUE(file.WriteAtCurrentPosAndCheck(base::as_byte_span(contents)));
+    return file;
+  }
+
   base::test::TaskEnvironment task_environment_;
   base::ScopedTempDir temp_dir_;
 };
@@ -252,6 +262,92 @@ TEST_F(WarcWriterTest, GzipDestructionFlushesQueuedRecords) {
       InflateGzipMembers(contents);
   ASSERT_TRUE(members.has_value());
   EXPECT_EQ(std::vector<std::string>({"queued-at-destruction"}), *members);
+}
+
+TEST_F(WarcWriterTest, SpilledBodyIsStreamedIntoTheArchive) {
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/1024,
+                    WarcWriter::Compression::kNone);
+
+  const std::string body(300 * 1024, 'q');
+  base::test::TestFuture<base::File> returned;
+  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
+                                              MakeSpillFile(body), body.size(),
+                                              returned.GetCallback()));
+
+  // Head, then the spilled bytes, then the separator the head stops short of.
+  EXPECT_EQ("HEAD:" + body + "\r\n\r\n", ReadArchiveAfterFlush(writer));
+  EXPECT_TRUE(returned.Get().IsValid());
+}
+
+TEST_F(WarcWriterTest, SpilledBodyIsGzippedIntoOneMember) {
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/1024,
+                    WarcWriter::Compression::kGzipPerRecord);
+
+  // Bigger than the streaming chunk, so the body really is deflated in pieces.
+  const std::string body(300 * 1024, 'w');
+  base::test::TestFuture<base::File> returned;
+  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
+                                              MakeSpillFile(body), body.size(),
+                                              returned.GetCallback()));
+
+  // A record split across many deflate calls still has to land in exactly one
+  // member, or its byte offset means nothing to a reader.
+  const std::optional<std::vector<std::string>> members =
+      InflateGzipMembers(ReadArchiveAfterFlush(writer));
+  ASSERT_TRUE(members.has_value());
+  ASSERT_EQ(1u, members->size());
+  EXPECT_EQ("HEAD:" + body + "\r\n\r\n", (*members)[0]);
+}
+
+TEST_F(WarcWriterTest, SpilledBodyDoesNotCountAgainstTheQueueBudget) {
+  // A budget far smaller than the body: the point of spilling is that the
+  // body never occupies the producing sequence's memory at all, so it cannot
+  // be what pushes the queue over.
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/64,
+                    WarcWriter::Compression::kNone);
+
+  const std::string body(512 * 1024, 'e');
+  base::test::TestFuture<base::File> returned;
+  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
+                                              MakeSpillFile(body), body.size(),
+                                              returned.GetCallback()));
+  EXPECT_EQ(5u, writer.queued_bytes());
+  EXPECT_EQ(0u, writer.dropped_records());
+
+  EXPECT_EQ("HEAD:" + body + "\r\n\r\n", ReadArchiveAfterFlush(writer));
+}
+
+TEST_F(WarcWriterTest, SpillFileComesBackWhenTheRecordIsDropped) {
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/4,
+                    WarcWriter::Compression::kNone);
+
+  // Fill the budget so the spilled record is shed.
+  EXPECT_TRUE(writer.AddRecord(ToBytes("12345678")));
+
+  base::test::TestFuture<base::File> returned;
+  EXPECT_FALSE(writer.AddRecordWithSpilledBody(
+      ToBytes("HEAD:"), MakeSpillFile("dropped"), 7, returned.GetCallback()));
+
+  // The producer waits on this file before reusing it; never returning it
+  // would stall every later completion.
+  EXPECT_TRUE(returned.Get().IsValid());
+  EXPECT_EQ(1u, writer.dropped_records());
+}
+
+TEST_F(WarcWriterTest, SpilledRecordIsWrittenWholeAmongOthers) {
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/1024,
+                    WarcWriter::Compression::kNone);
+
+  const std::string body(100 * 1024, 'p');
+  base::test::TestFuture<base::File> returned;
+  EXPECT_TRUE(writer.AddRecord(ToBytes("before")));
+  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
+                                              MakeSpillFile(body), body.size(),
+                                              returned.GetCallback()));
+  EXPECT_TRUE(writer.AddRecord(ToBytes("after")));
+
+  EXPECT_EQ("before" + std::string("HEAD:") + body + "\r\n\r\n" + "after",
+            ReadArchiveAfterFlush(writer));
 }
 
 }  // namespace

@@ -66,6 +66,22 @@ class WarcWriter {
   // dropped because the queue was over budget.
   bool AddRecord(std::vector<uint8_t> record);
 
+  // Queues a record whose block is too large to hold in memory: `head` is the
+  // WARC header and everything preceding the spilled bytes, and the first
+  // `body_size` bytes of `body` complete the block. The record separator is
+  // appended here, so `head` must not already carry one.
+  //
+  // Only the head counts against the queue's byte budget, since the body never
+  // enters memory: it is streamed from `body` straight into the archive on the
+  // file sequence. `body` is consumed, and returned through `on_written` once
+  // the record has been written, so the caller can reuse or release it --
+  // reusing it any earlier would corrupt a record still being streamed.
+  bool AddRecordWithSpilledBody(
+      std::vector<uint8_t> head,
+      base::File body,
+      uint64_t body_size,
+      base::OnceCallback<void(base::File)> on_written);
+
   // Number of records dropped so far because the queue was over budget.
   uint64_t dropped_records() const;
 
@@ -77,7 +93,11 @@ class WarcWriter {
   void FlushForTesting(base::OnceClosure callback);
 
  private:
+  struct QueuedRecord;
   class WriteQueue;
+
+  bool Enqueue(QueuedRecord record);
+
   class FileWriter;
 
   scoped_refptr<WriteQueue> queue_;

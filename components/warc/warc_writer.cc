@@ -4,8 +4,10 @@
 
 #include "components/warc/warc_writer.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/containers/circular_deque.h"
@@ -17,9 +19,43 @@
 #include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
 #include "base/thread_annotations.h"
-#include "third_party/zlib/google/compression_utils.h"
+#include "components/warc/gzip_member_writer.h"
 
 namespace warc {
+
+namespace {
+
+// Records are separated by two CRLFs, which a spilled record's head stops
+// short of.
+constexpr std::string_view kRecordSeparator = "\r\n\r\n";
+
+// How much of a spilled body is held in memory at once on the way to the
+// archive.
+constexpr size_t kBodyChunkSize = 64 * 1024;
+
+}  // namespace
+
+// One queued record: either complete in memory, or a head plus a body that
+// stays on disk until it is written straight through to the archive.
+struct WarcWriter::QueuedRecord {
+  QueuedRecord() = default;
+  QueuedRecord(const QueuedRecord&) = delete;
+  QueuedRecord& operator=(const QueuedRecord&) = delete;
+  QueuedRecord(QueuedRecord&&) = default;
+  QueuedRecord& operator=(QueuedRecord&&) = default;
+  ~QueuedRecord() = default;
+
+  // The whole record when `body` is absent, otherwise everything before the
+  // spilled bytes. The record separator is part of this only in the first case.
+  std::vector<uint8_t> head;
+
+  // Set only for a spilled record.
+  base::File body;
+  uint64_t body_size = 0;
+  base::OnceCallback<void(base::File)> on_written;
+
+  bool spilled() const { return body.IsValid(); }
+};
 
 // Holds records handed over by the producing sequence until the file sequence
 // drains them. Every method is safe to call from any sequence.
@@ -35,7 +71,7 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
   // `should_post_flush` when the caller needs to post a drain task, which
   // happens only on the transition out of "a flush is already scheduled" so
   // that a burst of records produces one task rather than one task per record.
-  bool Add(std::vector<uint8_t> record, bool* should_post_flush) {
+  bool Add(QueuedRecord record, bool* should_post_flush) {
     base::AutoLock auto_lock(lock_);
 
     // Records are all-or-nothing: a partially written record would
@@ -50,10 +86,16 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
     if (queued_bytes_ >= max_queued_bytes_) {
       ++dropped_records_;
       *should_post_flush = false;
+      // Return the spill file, since nothing will ever stream from it.
+      if (record.on_written) {
+        std::move(record.on_written).Run(std::move(record.body));
+      }
       return false;
     }
 
-    queued_bytes_ += record.size();
+    // Only the head is accounted: a spilled body never enters memory, so it
+    // costs the producing sequence nothing to hold.
+    queued_bytes_ += record.head.size();
     records_.push_back(std::move(record));
 
     *should_post_flush = !flush_pending_;
@@ -61,9 +103,9 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
     return true;
   }
 
-  base::circular_deque<std::vector<uint8_t>> TakeAll() {
+  base::circular_deque<QueuedRecord> TakeAll() {
     base::AutoLock auto_lock(lock_);
-    base::circular_deque<std::vector<uint8_t>> taken;
+    base::circular_deque<QueuedRecord> taken;
     taken.swap(records_);
     queued_bytes_ = 0;
     flush_pending_ = false;
@@ -85,7 +127,7 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
   ~WriteQueue() = default;
 
   mutable base::Lock lock_;
-  base::circular_deque<std::vector<uint8_t>> records_ GUARDED_BY(lock_);
+  base::circular_deque<QueuedRecord> records_ GUARDED_BY(lock_);
   size_t queued_bytes_ GUARDED_BY(lock_) = 0;
   uint64_t dropped_records_ GUARDED_BY(lock_) = 0;
   bool flush_pending_ GUARDED_BY(lock_) = false;
@@ -97,6 +139,8 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
 // file sequence.
 class WarcWriter::FileWriter {
  public:
+  using Sink = GzipMemberWriter::SinkCallback;
+
   FileWriter(base::File file, Compression compression)
       : file_(std::move(file)), compression_(compression) {}
 
@@ -110,33 +154,82 @@ class WarcWriter::FileWriter {
   }
 
   void Flush(scoped_refptr<WriteQueue> queue) {
-    base::circular_deque<std::vector<uint8_t>> records = queue->TakeAll();
-    if (!file_.IsValid()) {
-      return;
-    }
-
-    for (const std::vector<uint8_t>& record : records) {
-      if (compression_ == Compression::kNone) {
-        if (!WriteAll(record)) {
-          return;
-        }
+    base::circular_deque<QueuedRecord> records = queue->TakeAll();
+    for (QueuedRecord& record : records) {
+      const bool wrote = file_.IsValid() && WriteRecord(record);
+      // The body is handed back whether or not it was written, so the producer
+      // is never left waiting on a record the archive has already given up on.
+      if (record.on_written) {
+        std::move(record.on_written).Run(std::move(record.body));
+      }
+      if (!wrote && !file_.IsValid()) {
+        // The archive is closed; drain the rest only to return their bodies.
         continue;
       }
+    }
+  }
 
-      // One gzip member per record, so a reader can decompress any single
-      // record without reading the ones before it.
-      std::string member;
-      if (!compression::GzipCompress(record, &member)) {
-        // Emitting the record uncompressed instead would leave raw bytes in
-        // the middle of a member stream, which no gzip reader could get past.
-        LOG(ERROR) << "Failed compressing WARC record; closing archive.";
-        file_.Close();
-        return;
+  // Writes one record, compressing it into a member of its own where the
+  // archive is gzipped. Returns false once the archive has been closed.
+  bool WriteRecord(QueuedRecord& record) {
+    std::optional<GzipMemberWriter> member;
+    Sink sink =
+        base::BindRepeating(&FileWriter::WriteAll, base::Unretained(this));
+    if (compression_ == Compression::kGzipPerRecord) {
+      member.emplace(sink);
+      sink = base::BindRepeating(
+          [](GzipMemberWriter* writer, base::span<const uint8_t> data) {
+            return writer->Write(data);
+          },
+          &member.value());
+    }
+
+    if (!sink.Run(record.head)) {
+      return false;
+    }
+    if (record.spilled()) {
+      if (!StreamSpilledBody(record, sink)) {
+        return false;
       }
-      if (!WriteAll(base::as_byte_span(member))) {
-        return;
+      // A spilled head stops at the block, so the separator is added here.
+      if (!sink.Run(base::as_byte_span(kRecordSeparator))) {
+        return false;
       }
     }
+    if (member && !member->Finish()) {
+      // Half a member is unreadable, and so is everything after it.
+      LOG(ERROR) << "Failed compressing WARC record; closing archive.";
+      file_.Close();
+      return false;
+    }
+    return true;
+  }
+
+  // Copies `record.body_size` bytes out of the spill file and into `sink`,
+  // never holding more than one chunk of it.
+  bool StreamSpilledBody(QueuedRecord& record, const Sink& sink) {
+    std::vector<uint8_t> buffer(kBodyChunkSize);
+    uint64_t remaining = record.body_size;
+    int64_t offset = 0;
+    while (remaining > 0) {
+      const size_t wanted =
+          static_cast<size_t>(std::min<uint64_t>(remaining, buffer.size()));
+      std::optional<size_t> read =
+          record.body.Read(offset, base::span(buffer).first(wanted));
+      if (!read.has_value() || *read == 0) {
+        // The header already promised Content-Length bytes, so a short spill
+        // leaves the record -- and everything framed after it -- unreadable.
+        LOG(ERROR) << "Spilled WARC body ended early; closing archive.";
+        file_.Close();
+        return false;
+      }
+      if (!sink.Run(base::span(buffer).first(*read))) {
+        return false;
+      }
+      offset += static_cast<int64_t>(*read);
+      remaining -= *read;
+    }
+    return true;
   }
 
   void FlushToDisk(base::OnceClosure callback) {
@@ -193,7 +286,29 @@ bool WarcWriter::AddRecord(std::vector<uint8_t> record) {
     return true;
   }
 
+  QueuedRecord queued_record;
+  queued_record.head = std::move(record);
+  return Enqueue(std::move(queued_record));
+}
+
+bool WarcWriter::AddRecordWithSpilledBody(
+    std::vector<uint8_t> head,
+    base::File body,
+    uint64_t body_size,
+    base::OnceCallback<void(base::File)> on_written) {
+  QueuedRecord queued_record;
+  queued_record.head = std::move(head);
+  queued_record.body = std::move(body);
+  queued_record.body_size = body_size;
+  queued_record.on_written = std::move(on_written);
+  return Enqueue(std::move(queued_record));
+}
+
+bool WarcWriter::Enqueue(QueuedRecord record) {
   bool should_post_flush = false;
+  // A dropped record still carries its body and callback into Add(), which
+  // hands them back, so a producer waiting on the spill file is never
+  // stranded.
   const bool queued = queue_->Add(std::move(record), &should_post_flush);
 
   if (should_post_flush) {
