@@ -106,10 +106,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   // Response body bytes, in order.
   void AddBodyBytes(base::span<const uint8_t> bytes);
 
-  // Supplies a file to divert the body into once it grows past `threshold`,
-  // rather than holding it in memory. A record must state its length before
-  // its block, so without this a whole resource has to be buffered, and a
-  // video cannot be.
+  // Supplies a file to divert the body into once it outgrows the in-memory
+  // ceiling, rather than truncating it there. A record must state its length
+  // before its block, so without this a whole resource has to be buffered, and
+  // a video cannot be.
   //
   // `spill_factory` returns nothing when no file is free, in which case the
   // body stays in memory under the usual cap. Only meaningful for a body in
@@ -117,9 +117,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   // which would invalidate a digest taken while the bytes streamed past.
   using SpillFactory =
       base::RepeatingCallback<std::unique_ptr<warc::WarcBodySpill>()>;
-  void SpillBodyOver(size_t threshold,
-                     SpillFactory spill_factory,
-                     base::RepeatingCallback<void(base::File)> return_file);
+  void EnableBodySpilling(
+      SpillFactory spill_factory,
+      base::RepeatingCallback<void(base::File)> return_file);
 
   // Marks the body as ending early for a reason other than the size cap.
   // `reason` must be a value the specification defines: "time", "disconnect",
@@ -170,7 +170,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   std::optional<crypto::hash::Hasher> block_hasher_;
   std::optional<crypto::hash::Hasher> payload_hasher_;
 
-  std::optional<size_t> spill_threshold_;
   SpillFactory spill_factory_;
   base::RepeatingCallback<void(base::File)> return_spill_file_;
 
@@ -185,22 +184,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
     // allowed to shed load rather than grow memory without bound.
     size_t max_queued_bytes = 64u * 1024 * 1024;
 
-    // Ceiling on a single buffered response body.
+    // How much of a response body is held in memory. A record must state its
+    // length before its block, so a body has to be complete before it can be
+    // written; this bounds what that costs.
+    //
+    // It is the only bound on a body, and it is deliberately not a size limit
+    // on the resource. Past it the body goes to disk where a spill file is
+    // available, which removes the limit rather than raising it -- bytes on
+    // disk cost no memory -- and is truncated with "WARC-Truncated: length"
+    // only where one is not.
     size_t max_body_bytes = 32u * 1024 * 1024;
-
-    // Ceiling on a body buffered while completing a ranged resource. A record
-    // must state its length before its block, so the whole resource is held in
-    // memory until it can be written, and these are whole videos rather than
-    // page subresources. The limit exists only to keep a runaway fetch from
-    // exhausting memory -- anything over it is still archived, marked
-    // "WARC-Truncated: length" -- so it is set far above any resource a page
-    // realistically embeds.
-    size_t max_completion_body_bytes = 512u * 1024 * 1024;
-
-    // Point past which a completion's body goes to disk instead of memory.
-    // Below it, buffering is cheaper than the file round trip; above it, the
-    // resource is large enough that memory is the wrong place for it.
-    size_t spill_threshold_bytes = 4u * 1024 * 1024;
   };
 
   // `file` must already be open for writing: the network service is sandboxed

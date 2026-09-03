@@ -409,7 +409,7 @@ TEST_F(WarcRecorderTest, SpilledBodyIsArchivedWholeWithCorrectDigests) {
   WarcRecorder::Limits limits;
   // Spill almost immediately, so the test exercises the disk path rather than
   // the buffer, without needing a large body.
-  limits.spill_threshold_bytes = 1024;
+  limits.max_body_bytes = 1024;
   auto recorder = MakeRecorder(limits);
 
   const base::FilePath spill_path =
@@ -470,8 +470,7 @@ TEST_F(WarcRecorderTest, SpilledBodyIsArchivedWholeWithCorrectDigests) {
 
 TEST_F(WarcRecorderTest, WithoutASpillFileTheBodyStaysCapped) {
   WarcRecorder::Limits limits;
-  limits.spill_threshold_bytes = 1024;
-  limits.max_completion_body_bytes = 4096;
+  limits.max_body_bytes = 4096;
   // Deliberately no SetSpillFile: the browser may have failed to open one.
   auto recorder = MakeRecorder(limits);
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/check_op.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -197,11 +198,9 @@ void WarcExchangeRecorder::SetBodyIsWireFormat(bool is_wire_format) {
   body_is_wire_format_ = is_wire_format;
 }
 
-void WarcExchangeRecorder::SpillBodyOver(
-    size_t threshold,
+void WarcExchangeRecorder::EnableBodySpilling(
     SpillFactory spill_factory,
     base::RepeatingCallback<void(base::File)> return_file) {
-  spill_threshold_ = threshold;
   spill_factory_ = std::move(spill_factory);
   return_spill_file_ = std::move(return_file);
 }
@@ -243,10 +242,11 @@ void WarcExchangeRecorder::AddBodyBytes(base::span<const uint8_t> bytes) {
     return;
   }
 
-  // Past the threshold the body goes to disk, so nothing further is capped:
-  // the point of spilling is that size stops costing memory.
-  if (spill_threshold_ && body_.size() + bytes.size() > *spill_threshold_ &&
-      BeginSpill()) {
+  // At the ceiling the body moves to disk rather than being cut short, which
+  // removes the limit instead of raising it: once the bytes are spilled their
+  // size costs no memory. Truncation below is what happens when there is no
+  // spill file to move them to.
+  if (body_.size() + bytes.size() > max_body_bytes_ && BeginSpill()) {
     AddBodyBytes(bytes);
     return;
   }
@@ -403,10 +403,8 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder() {
 
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder() {
   auto recorder = std::make_unique<WarcExchangeRecorder>(
-      writer_weak_factory_.GetWeakPtr(), limits_.max_completion_body_bytes,
-      warcinfo_id_);
-  recorder->SpillBodyOver(
-      limits_.spill_threshold_bytes,
+      writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes, warcinfo_id_);
+  recorder->EnableBodySpilling(
       // A WeakPtr cannot bind to a method that returns a value, and an
       // exchange recorder may outlive the session recorder.
       base::BindRepeating(
