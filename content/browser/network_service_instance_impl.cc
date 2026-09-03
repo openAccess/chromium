@@ -462,8 +462,9 @@ void CreateNetworkServiceOnIOForTesting(
   GetLocalNetworkService()->Initialize(
       network::mojom::NetworkServiceParams::New(),
       true /* mock_network_change_notifier */);
-  if (completion_event)
+  if (completion_event) {
     completion_event->Signal();
+  }
 }
 
 void BindNetworkChangeManagerReceiver(
@@ -496,12 +497,15 @@ net::NetLogCaptureMode GetNetCaptureModeFromCommandLine(
     if (value == "HeavilyRedacted") {
       return net::NetLogCaptureMode::kHeavilyRedacted;
     }
-    if (value == "Default")
+    if (value == "Default") {
       return net::NetLogCaptureMode::kDefault;
-    if (value == "IncludeSensitive")
+    }
+    if (value == "IncludeSensitive") {
       return net::NetLogCaptureMode::kIncludeSensitive;
-    if (value == "Everything")
+    }
+    if (value == "Everything") {
       return net::NetLogCaptureMode::kEverything;
+    }
 
     // Warn when using the old command line switches.
     if (value == "IncludeCookiesAndCredentials") {
@@ -649,9 +653,10 @@ network::mojom::NetworkService* GetNetworkService() {
         if (IsInProcessNetworkService()) {
           CreateInProcessNetworkService(std::move(receiver));
         } else {
-          if (service_was_bound)
+          if (service_was_bound) {
             LOG(ERROR) << "Network service crashed or was terminated, "
                           "restarting service.";
+          }
           ServiceProcessHost::Options options;
           options.WithDisplayName(u"Network Service");
           if (g_network_service_crashes_on_next_startup) {
@@ -785,9 +790,21 @@ network::mojom::NetworkService* GetNetworkService() {
             // sees the path, so this has to be decided here.
             const bool compress_records =
                 warc_path.MatchesFinalExtension(FILE_PATH_LITERAL(".gz"));
+            // Scratch space for resources too large to assemble in memory.
+            // The network service is sandboxed and cannot open one itself, so
+            // it is opened here beside the archive and deleted on close --
+            // nothing in it outlives the capture.
+            base::File spill = NetworkServiceInstancePrivate::BlockingOpenFile(
+                warc_path.AddExtensionASCII(".spill"),
+                base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_READ |
+                    base::File::FLAG_WRITE | base::File::FLAG_DELETE_ON_CLOSE);
+            if (!spill.IsValid()) {
+              LOG(WARNING) << "Failed opening WARC spill file beside "
+                           << warc_path.value();
+            }
             g_observed_network_service->remote()->StartWarcRecording(
                 std::move(file), warc_path.BaseName().AsUTF8Unsafe(),
-                compress_records);
+                compress_records, std::move(spill));
           }
         }
       }
@@ -966,8 +983,9 @@ cert_verifier::mojom::CertVerifierServiceFactory*
 GetCertVerifierServiceFactory() {
   DCHECK(!BrowserThread::IsThreadInitialized(BrowserThread::UI) ||
          BrowserThread::CurrentlyOn(BrowserThread::UI));
-  if (g_cert_verifier_service_factory_for_testing)
+  if (g_cert_verifier_service_factory_for_testing) {
     return g_cert_verifier_service_factory_for_testing;
+  }
 
   mojo::Remote<cert_verifier::mojom::CertVerifierServiceFactory>&
       factory_remote_storage = GetCertVerifierServiceFactoryRemoteStorage();
@@ -1103,8 +1121,9 @@ void CreateNetworkContextInNetworkService(
     // context has been created by Android Webview, which does not understand
     // the concept of `unsandboxed_data_path`. In this case, `data_directory`
     // should always be used, if present.
-    if (!params->file_paths->unsandboxed_data_path)
+    if (!params->file_paths->unsandboxed_data_path) {
       grant_result = SandboxGrantResult::kDidNotAttemptToGrantSandboxAccess;
+    }
   }
   // Create network context immediately without thread hops.
   CreateNetworkContextInternal(std::move(context), std::move(params),

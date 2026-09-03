@@ -6,6 +6,8 @@ static_library("warc") {
   sources = [
     "gzip_member_writer.cc",
     "gzip_member_writer.h",
+    "warc_body_spill.cc",
+    "warc_body_spill.h",
     "warc_record.cc",
     "warc_record.h",
     "warc_writer.cc",

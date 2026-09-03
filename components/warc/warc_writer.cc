@@ -50,11 +50,19 @@ struct WarcWriter::QueuedRecord {
   std::vector<uint8_t> head;
 
   // Set only for a spilled record.
-  base::File body;
+  std::unique_ptr<WarcBodySpill> spill;
+  // Pulled out of `spill` on the file sequence, once every append has run.
+  base::File spill_file;
   uint64_t body_size = 0;
+
+  // A spilled record is not writable until the appends filling it have run.
+  // Records are written in order, so an unready one holds up those behind it
+  // rather than being skipped.
+  bool ready = true;
+  uint64_t id = 0;
   base::OnceCallback<void(base::File)> on_written;
 
-  bool spilled() const { return body.IsValid(); }
+  bool spilled() const { return spill != nullptr; }
 };
 
 // Holds records handed over by the producing sequence until the file sequence
@@ -71,7 +79,11 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
   // `should_post_flush` when the caller needs to post a drain task, which
   // happens only on the transition out of "a flush is already scheduled" so
   // that a burst of records produces one task rather than one task per record.
-  bool Add(QueuedRecord record, bool* should_post_flush) {
+  //
+  // A dropped record is handed back rather than released here: it may own a
+  // spill, which can only be reclaimed on the file sequence.
+  std::optional<QueuedRecord> Add(QueuedRecord record,
+                                  bool* should_post_flush) {
     base::AutoLock auto_lock(lock_);
 
     // Records are all-or-nothing: a partially written record would
@@ -86,11 +98,7 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
     if (queued_bytes_ >= max_queued_bytes_) {
       ++dropped_records_;
       *should_post_flush = false;
-      // Return the spill file, since nothing will ever stream from it.
-      if (record.on_written) {
-        std::move(record.on_written).Run(std::move(record.body));
-      }
-      return false;
+      return record;
     }
 
     // Only the head is accounted: a spilled body never enters memory, so it
@@ -100,16 +108,37 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
 
     *should_post_flush = !flush_pending_;
     flush_pending_ = true;
-    return true;
+    return std::nullopt;
   }
 
-  base::circular_deque<QueuedRecord> TakeAll() {
+  // Pops the oldest record if it is ready to write. Returns nothing when the
+  // queue is empty or its head is a spilled record whose bytes have not all
+  // been written yet; writing past it would reorder the archive.
+  std::optional<QueuedRecord> TakeFrontIfReady() {
     base::AutoLock auto_lock(lock_);
-    base::circular_deque<QueuedRecord> taken;
-    taken.swap(records_);
-    queued_bytes_ = 0;
-    flush_pending_ = false;
-    return taken;
+    if (records_.empty() || !records_.front().ready) {
+      flush_pending_ = false;
+      return std::nullopt;
+    }
+    QueuedRecord record = std::move(records_.front());
+    records_.pop_front();
+    queued_bytes_ -= record.head.size();
+    return record;
+  }
+
+  void MarkReady(uint64_t id) {
+    base::AutoLock auto_lock(lock_);
+    for (QueuedRecord& record : records_) {
+      if (record.id == id) {
+        record.ready = true;
+        return;
+      }
+    }
+  }
+
+  uint64_t NextId() {
+    base::AutoLock auto_lock(lock_);
+    return ++last_id_;
   }
 
   uint64_t dropped_records() const {
@@ -131,6 +160,7 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
   size_t queued_bytes_ GUARDED_BY(lock_) = 0;
   uint64_t dropped_records_ GUARDED_BY(lock_) = 0;
   bool flush_pending_ GUARDED_BY(lock_) = false;
+  uint64_t last_id_ GUARDED_BY(lock_) = 0;
 
   const size_t max_queued_bytes_;
 };
@@ -154,18 +184,20 @@ class WarcWriter::FileWriter {
   }
 
   void Flush(scoped_refptr<WriteQueue> queue) {
-    base::circular_deque<QueuedRecord> records = queue->TakeAll();
-    for (QueuedRecord& record : records) {
+    while (std::optional<QueuedRecord> taken = queue->TakeFrontIfReady()) {
+      QueuedRecord& record = *taken;
       const bool wrote = file_.IsValid() && WriteRecord(record);
-      // The body is handed back whether or not it was written, so the producer
-      // is never left waiting on a record the archive has already given up on.
+      // The file comes back whether or not the record was written, so the
+      // producer is never left waiting on one the archive has given up on.
       if (record.on_written) {
-        std::move(record.on_written).Run(std::move(record.body));
+        std::move(record.on_written)
+            .Run(
+                record.spill_file.IsValid()
+                    ? std::move(record.spill_file)
+                    : (record.spill ? record.spill->TakeFile() : base::File()));
       }
-      if (!wrote && !file_.IsValid()) {
-        // The archive is closed; drain the rest only to return their bodies.
-        continue;
-      }
+      // A closed archive still drains the queue, so every spill comes back.
+      std::ignore = wrote;
     }
   }
 
@@ -208,6 +240,16 @@ class WarcWriter::FileWriter {
   // Copies `record.body_size` bytes out of the spill file and into `sink`,
   // never holding more than one chunk of it.
   bool StreamSpilledBody(QueuedRecord& record, const Sink& sink) {
+    // Every append queued before this record ran on this same sequence, so the
+    // file is complete by now.
+    if (!record.spill_file.IsValid()) {
+      record.spill_file = record.spill->TakeFile();
+    }
+    if (!record.spill_file.IsValid()) {
+      LOG(ERROR) << "WARC body spill failed; closing archive.";
+      file_.Close();
+      return false;
+    }
     std::vector<uint8_t> buffer(kBodyChunkSize);
     uint64_t remaining = record.body_size;
     int64_t offset = 0;
@@ -215,7 +257,7 @@ class WarcWriter::FileWriter {
       const size_t wanted =
           static_cast<size_t>(std::min<uint64_t>(remaining, buffer.size()));
       std::optional<size_t> read =
-          record.body.Read(offset, base::span(buffer).first(wanted));
+          record.spill_file.Read(offset, base::span(buffer).first(wanted));
       if (!read.has_value() || *read == 0) {
         // The header already promised Content-Length bytes, so a short spill
         // leaves the record -- and everything framed after it -- unreadable.
@@ -291,25 +333,62 @@ bool WarcWriter::AddRecord(std::vector<uint8_t> record) {
   return Enqueue(std::move(queued_record));
 }
 
+std::unique_ptr<WarcBodySpill> WarcWriter::CreateBodySpill(base::File file) {
+  return std::make_unique<WarcBodySpill>(std::move(file), file_task_runner_);
+}
+
 bool WarcWriter::AddRecordWithSpilledBody(
     std::vector<uint8_t> head,
-    base::File body,
+    std::unique_ptr<WarcBodySpill> spill,
     uint64_t body_size,
     base::OnceCallback<void(base::File)> on_written) {
   QueuedRecord queued_record;
   queued_record.head = std::move(head);
-  queued_record.body = std::move(body);
+  queued_record.spill = std::move(spill);
   queued_record.body_size = body_size;
   queued_record.on_written = std::move(on_written);
-  return Enqueue(std::move(queued_record));
+  // The bytes are still on their way to the spill file. This task is posted
+  // behind every one of those writes, so by the time it runs the record really
+  // is complete -- and until then it holds its place in the archive's order.
+  queued_record.ready = false;
+  queued_record.id = queue_->NextId();
+  const uint64_t id = queued_record.id;
+
+  if (!Enqueue(std::move(queued_record))) {
+    return false;
+  }
+  file_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](scoped_refptr<WriteQueue> queue, FileWriter* writer, uint64_t id) {
+            queue->MarkReady(id);
+            writer->Flush(queue);
+          },
+          queue_, base::Unretained(file_writer_.get()), id));
+  return true;
 }
 
 bool WarcWriter::Enqueue(QueuedRecord record) {
   bool should_post_flush = false;
-  // A dropped record still carries its body and callback into Add(), which
-  // hands them back, so a producer waiting on the spill file is never
-  // stranded.
-  const bool queued = queue_->Add(std::move(record), &should_post_flush);
+  std::optional<QueuedRecord> dropped =
+      queue_->Add(std::move(record), &should_post_flush);
+
+  if (dropped) {
+    // Reclaiming the spill means touching the file sequence, and a producer
+    // waiting on that file must not be stranded just because the record was
+    // shed.
+    file_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](QueuedRecord shed) {
+              if (shed.on_written) {
+                std::move(shed.on_written)
+                    .Run(shed.spill ? shed.spill->TakeFile() : base::File());
+              }
+            },
+            std::move(*dropped)));
+    return false;
+  }
 
   if (should_post_flush) {
     file_task_runner_->PostTask(
@@ -317,7 +396,7 @@ bool WarcWriter::Enqueue(QueuedRecord record) {
         base::BindOnce(&FileWriter::Flush, base::Unretained(file_writer_.get()),
                        queue_));
   }
-  return queued;
+  return true;
 }
 
 uint64_t WarcWriter::dropped_records() const {

@@ -53,14 +53,17 @@ class WarcWriterTest : public testing::Test {
     return contents;
   }
 
-  // A stand-in for the spill file the browser hands the network service.
-  base::File MakeSpillFile(std::string_view contents) {
+  // A spill holding `contents`, as a completion would have filled it.
+  std::unique_ptr<WarcBodySpill> MakeSpill(WarcWriter& writer,
+                                           std::string_view contents) {
     const base::FilePath path = temp_dir_.GetPath().AppendASCII("spill.bin");
     base::File file(path, base::File::FLAG_CREATE_ALWAYS |
                               base::File::FLAG_READ | base::File::FLAG_WRITE);
     EXPECT_TRUE(file.IsValid());
-    EXPECT_TRUE(file.WriteAtCurrentPosAndCheck(base::as_byte_span(contents)));
-    return file;
+    std::unique_ptr<WarcBodySpill> spill =
+        writer.CreateBodySpill(std::move(file));
+    spill->Append(ToBytes(contents));
+    return spill;
   }
 
   base::test::TaskEnvironment task_environment_;
@@ -270,9 +273,9 @@ TEST_F(WarcWriterTest, SpilledBodyIsStreamedIntoTheArchive) {
 
   const std::string body(300 * 1024, 'q');
   base::test::TestFuture<base::File> returned;
-  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
-                                              MakeSpillFile(body), body.size(),
-                                              returned.GetCallback()));
+  EXPECT_TRUE(
+      writer.AddRecordWithSpilledBody(ToBytes("HEAD:"), MakeSpill(writer, body),
+                                      body.size(), returned.GetCallback()));
 
   // Head, then the spilled bytes, then the separator the head stops short of.
   EXPECT_EQ("HEAD:" + body + "\r\n\r\n", ReadArchiveAfterFlush(writer));
@@ -286,9 +289,9 @@ TEST_F(WarcWriterTest, SpilledBodyIsGzippedIntoOneMember) {
   // Bigger than the streaming chunk, so the body really is deflated in pieces.
   const std::string body(300 * 1024, 'w');
   base::test::TestFuture<base::File> returned;
-  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
-                                              MakeSpillFile(body), body.size(),
-                                              returned.GetCallback()));
+  EXPECT_TRUE(
+      writer.AddRecordWithSpilledBody(ToBytes("HEAD:"), MakeSpill(writer, body),
+                                      body.size(), returned.GetCallback()));
 
   // A record split across many deflate calls still has to land in exactly one
   // member, or its byte offset means nothing to a reader.
@@ -308,9 +311,9 @@ TEST_F(WarcWriterTest, SpilledBodyDoesNotCountAgainstTheQueueBudget) {
 
   const std::string body(512 * 1024, 'e');
   base::test::TestFuture<base::File> returned;
-  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
-                                              MakeSpillFile(body), body.size(),
-                                              returned.GetCallback()));
+  EXPECT_TRUE(
+      writer.AddRecordWithSpilledBody(ToBytes("HEAD:"), MakeSpill(writer, body),
+                                      body.size(), returned.GetCallback()));
   EXPECT_EQ(5u, writer.queued_bytes());
   EXPECT_EQ(0u, writer.dropped_records());
 
@@ -325,8 +328,9 @@ TEST_F(WarcWriterTest, SpillFileComesBackWhenTheRecordIsDropped) {
   EXPECT_TRUE(writer.AddRecord(ToBytes("12345678")));
 
   base::test::TestFuture<base::File> returned;
-  EXPECT_FALSE(writer.AddRecordWithSpilledBody(
-      ToBytes("HEAD:"), MakeSpillFile("dropped"), 7, returned.GetCallback()));
+  EXPECT_FALSE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
+                                               MakeSpill(writer, "dropped"), 7,
+                                               returned.GetCallback()));
 
   // The producer waits on this file before reusing it; never returning it
   // would stall every later completion.
@@ -341,9 +345,9 @@ TEST_F(WarcWriterTest, SpilledRecordIsWrittenWholeAmongOthers) {
   const std::string body(100 * 1024, 'p');
   base::test::TestFuture<base::File> returned;
   EXPECT_TRUE(writer.AddRecord(ToBytes("before")));
-  EXPECT_TRUE(writer.AddRecordWithSpilledBody(ToBytes("HEAD:"),
-                                              MakeSpillFile(body), body.size(),
-                                              returned.GetCallback()));
+  EXPECT_TRUE(
+      writer.AddRecordWithSpilledBody(ToBytes("HEAD:"), MakeSpill(writer, body),
+                                      body.size(), returned.GetCallback()));
   EXPECT_TRUE(writer.AddRecord(ToBytes("after")));
 
   EXPECT_EQ("before" + std::string("HEAD:") + body + "\r\n\r\n" + "after",

@@ -14,6 +14,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/warc/warc_test_util.h"
@@ -402,6 +403,91 @@ TEST_F(WarcRecorderTest, GzipCaptureIsOneMemberPerRecord) {
 
   EXPECT_NE((*members)[2].find("WARC-Type: response"), std::string::npos);
   EXPECT_NE((*members)[2].find("<html>hi</html>"), std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, SpilledBodyIsArchivedWholeWithCorrectDigests) {
+  WarcRecorder::Limits limits;
+  // Spill almost immediately, so the test exercises the disk path rather than
+  // the buffer, without needing a large body.
+  limits.spill_threshold_bytes = 1024;
+  auto recorder = MakeRecorder(limits);
+
+  const base::FilePath spill_path =
+      temp_dir_.GetPath().AppendASCII("spill.bin");
+  recorder->SetSpillFile(base::File(spill_path, base::File::FLAG_CREATE_ALWAYS |
+                                                    base::File::FLAG_READ |
+                                                    base::File::FLAG_WRITE));
+
+  // Distinctive at both ends, so a truncated or misordered spill shows up.
+  std::string body(64 * 1024, 'm');
+  body.replace(0, 6, "FIRST!");
+  body.replace(body.size() - 5, 5, "LAST!");
+
+  {
+    auto exchange = recorder->CreateCompletionRecorder();
+    exchange->SetTargetUrl(GURL("https://example.org/big.mp4"));
+    exchange->SetBodyIsWireFormat(true);
+    exchange->SetResponseHeaders(
+        MakeResponseHeaders("HTTP/1.1 200 OK\nContent-Type: video/mp4\n\n"));
+    // Delivered in pieces, as it arrives off a socket.
+    for (size_t offset = 0; offset < body.size(); offset += 4096) {
+      exchange->AddBodyBytes(
+          base::as_byte_span(std::string_view(body).substr(offset, 4096)));
+    }
+    exchange->Finish();
+  }
+
+  const std::string archive = FinishAndRead(std::move(recorder));
+
+  // The whole body has to be present, in order, once.
+  EXPECT_NE(archive.find(body), std::string::npos)
+      << "the spilled body did not reach the archive intact";
+
+  // And the record must describe it: a digest taken while the bytes streamed
+  // past is worthless if it does not match what a reader recomputes.
+  const size_t head_start = archive.find("HTTP/1.1 200 OK");
+  ASSERT_NE(head_start, std::string::npos);
+  const size_t block_start = archive.rfind("WARC/1.1", head_start);
+  ASSERT_NE(block_start, std::string::npos);
+  const std::string record_head =
+      archive.substr(block_start, head_start - block_start);
+
+  const std::string http_head =
+      archive.substr(head_start, archive.find(body) - head_start);
+  const std::string block = http_head + body;
+  EXPECT_NE(record_head.find(warc::ComputeDigest(base::as_byte_span(block),
+                                                 warc::DigestAlgorithm::kSha1)),
+            std::string::npos)
+      << "WARC-Block-Digest does not match the archived block";
+  EXPECT_NE(record_head.find(warc::ComputeDigest(base::as_byte_span(body),
+                                                 warc::DigestAlgorithm::kSha1)),
+            std::string::npos)
+      << "WARC-Payload-Digest does not match the archived payload";
+  EXPECT_NE(
+      record_head.find("Content-Length: " + base::NumberToString(block.size())),
+      std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, WithoutASpillFileTheBodyStaysCapped) {
+  WarcRecorder::Limits limits;
+  limits.spill_threshold_bytes = 1024;
+  limits.max_completion_body_bytes = 4096;
+  // Deliberately no SetSpillFile: the browser may have failed to open one.
+  auto recorder = MakeRecorder(limits);
+
+  {
+    auto exchange = recorder->CreateCompletionRecorder();
+    exchange->SetTargetUrl(GURL("https://example.org/big.mp4"));
+    exchange->SetBodyIsWireFormat(true);
+    exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
+    exchange->AddBodyBytes(base::as_byte_span(std::string(64 * 1024, 'z')));
+    EXPECT_TRUE(exchange->body_truncated());
+    exchange->Finish();
+  }
+
+  const std::string archive = FinishAndRead(std::move(recorder));
+  // Capped rather than lost, and marked so nobody mistakes it for complete.
+  EXPECT_NE(archive.find("WARC-Truncated: length"), std::string::npos);
 }
 
 }  // namespace

@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,8 +19,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "components/warc/warc_body_spill.h"
 #include "components/warc/warc_record.h"
 #include "components/warc/warc_writer.h"
+#include "crypto/hash.h"
 #include "net/base/ip_endpoint.h"
 #include "net/http/http_raw_request_headers.h"
 #include "net/http/http_response_headers.h"
@@ -103,6 +106,21 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   // Response body bytes, in order.
   void AddBodyBytes(base::span<const uint8_t> bytes);
 
+  // Supplies a file to divert the body into once it grows past `threshold`,
+  // rather than holding it in memory. A record must state its length before
+  // its block, so without this a whole resource has to be buffered, and a
+  // video cannot be.
+  //
+  // `spill_factory` returns nothing when no file is free, in which case the
+  // body stays in memory under the usual cap. Only meaningful for a body in
+  // wire form: a decoded body has its header block rewritten at emit time,
+  // which would invalidate a digest taken while the bytes streamed past.
+  using SpillFactory =
+      base::RepeatingCallback<std::unique_ptr<warc::WarcBodySpill>()>;
+  void SpillBodyOver(size_t threshold,
+                     SpillFactory spill_factory,
+                     base::RepeatingCallback<void(base::File)> return_file);
+
   // Marks the body as ending early for a reason other than the size cap.
   // `reason` must be a value the specification defines: "time", "disconnect",
   // or "unspecified".
@@ -116,6 +134,13 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
 
  private:
   void EmitRecords();
+
+  // Moves whatever is buffered to disk and starts hashing as bytes go past.
+  // Returns false when no spill file was available.
+  bool BeginSpill();
+
+  // Queues the response record whose body is already on disk.
+  void EmitSpilledResponseRecord(const warc::RecordHeader& header);
 
   base::WeakPtr<warc::WarcWriter> writer_;
   const size_t max_body_bytes_;
@@ -137,6 +162,17 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   bool body_is_wire_format_ = false;
 
   std::vector<uint8_t> body_;
+
+  // Set once the body has been diverted to disk. From then on `body_` stays
+  // empty and the digests come from these, since the bytes are never all in
+  // memory at once.
+  std::unique_ptr<warc::WarcBodySpill> spill_;
+  std::optional<crypto::hash::Hasher> block_hasher_;
+  std::optional<crypto::hash::Hasher> payload_hasher_;
+
+  std::optional<size_t> spill_threshold_;
+  SpillFactory spill_factory_;
+  base::RepeatingCallback<void(base::File)> return_spill_file_;
 
   bool finished_ = false;
 };
@@ -160,6 +196,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
     // "WARC-Truncated: length" -- so it is set far above any resource a page
     // realistically embeds.
     size_t max_completion_body_bytes = 512u * 1024 * 1024;
+
+    // Point past which a completion's body goes to disk instead of memory.
+    // Below it, buffering is cheaper than the file round trip; above it, the
+    // resource is large enough that memory is the wrong place for it.
+    size_t spill_threshold_bytes = 4u * 1024 * 1024;
   };
 
   // `file` must already be open for writing: the network service is sandboxed
@@ -179,9 +220,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   std::unique_ptr<WarcExchangeRecorder> CreateExchangeRecorder();
 
   // Returns a recorder for a whole-resource fetch made to complete a resource
-  // the page only requested ranges of, which is allowed to buffer far more
-  // than an ordinary exchange.
+  // the page only requested ranges of. Such a body goes to disk rather than
+  // memory once it grows past a threshold, so a completed video costs the
+  // archive no more memory than a page subresource.
   std::unique_ptr<WarcExchangeRecorder> CreateCompletionRecorder();
+
+  // Hands the network service a file to spill large bodies into. The service
+  // is sandboxed and cannot open one itself, so the browser opens it alongside
+  // the archive, exactly as it does the archive.
+  void SetSpillFile(base::File file);
 
   // Writes the warcinfo record that describes this capture. Called once, before
   // any exchange records.
@@ -196,7 +243,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // Identifier of this capture's warcinfo record, empty until it is written.
   std::string warcinfo_id_;
 
+  // The single spill file, absent while a completion is using it. Completions
+  // run one at a time, so one file suffices; a completion that finds it gone
+  // keeps its body in memory under the usual cap.
+  base::File spill_file_;
+
+  std::unique_ptr<warc::WarcBodySpill> TakeBodySpill();
+  void ReturnSpillFile(base::File file);
+
   base::WeakPtrFactory<warc::WarcWriter> writer_weak_factory_;
+  base::WeakPtrFactory<WarcRecorder> weak_factory_{this};
 };
 
 }  // namespace network

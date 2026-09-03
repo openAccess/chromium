@@ -106,30 +106,38 @@ std::string FormatWarcDate(base::Time time) {
                             exploded.minute, exploded.second, microseconds);
 }
 
-std::string ComputeDigest(base::span<const uint8_t> data,
-                          DigestAlgorithm algorithm) {
+std::string LabelDigest(base::span<const uint8_t> digest,
+                        DigestAlgorithm algorithm) {
   std::string_view label;
-  crypto::hash::HashKind kind;
   switch (algorithm) {
     case DigestAlgorithm::kNone:
       return std::string();
     case DigestAlgorithm::kSha1:
       label = "sha1:";
-      kind = crypto::hash::HashKind::kSha1;
       break;
     case DigestAlgorithm::kSha256:
       label = "sha256:";
-      kind = crypto::hash::HashKind::kSha256;
       break;
   }
-
-  std::vector<uint8_t> digest(crypto::hash::DigestSizeForHashKind(kind));
-  crypto::hash::Hash(kind, data, digest);
 
   // WARC digests are conventionally unpadded base32.
   return base::StrCat(
       {label,
        base32::Base32Encode(digest, base32::Base32EncodePolicy::OMIT_PADDING)});
+}
+
+std::string ComputeDigest(base::span<const uint8_t> data,
+                          DigestAlgorithm algorithm) {
+  if (algorithm == DigestAlgorithm::kNone) {
+    return std::string();
+  }
+  const crypto::hash::HashKind kind = algorithm == DigestAlgorithm::kSha1
+                                          ? crypto::hash::HashKind::kSha1
+                                          : crypto::hash::HashKind::kSha256;
+
+  std::vector<uint8_t> digest(crypto::hash::DigestSizeForHashKind(kind));
+  crypto::hash::Hash(kind, data, digest);
+  return LabelDigest(digest, algorithm);
 }
 
 std::vector<uint8_t> BuildWarcinfoBlock(
@@ -141,12 +149,14 @@ std::vector<uint8_t> BuildWarcinfoBlock(
   return std::vector<uint8_t>(block.begin(), block.end());
 }
 
-std::vector<uint8_t> SerializeRecord(const RecordHeader& header,
-                                     base::span<const uint8_t> block,
-                                     size_t payload_offset,
-                                     DigestAlgorithm algorithm) {
-  CHECK_LE(payload_offset, block.size());
+namespace {
 
+// The header block shared by both serialization entry points: everything up to
+// and including the blank line that ends it.
+std::string BuildHead(const RecordHeader& header,
+                      uint64_t content_length,
+                      std::string_view block_digest,
+                      std::string_view payload_digest) {
   std::string head = base::StrCat({kVersion, kCrlf});
 
   AppendField(head, "WARC-Type", RecordTypeToString(header.type));
@@ -169,15 +179,10 @@ std::vector<uint8_t> SerializeRecord(const RecordHeader& header,
   AppendField(head, "WARC-Protocol", header.protocol);
   AppendField(head, "WARC-Truncated", header.truncated);
 
-  if (algorithm != DigestAlgorithm::kNone) {
-    AppendField(head, "WARC-Block-Digest", ComputeDigest(block, algorithm));
-    // A payload digest is only meaningful when the block has an entity body
-    // distinct from its headers.
-    if (payload_offset < block.size()) {
-      AppendField(head, "WARC-Payload-Digest",
-                  ComputeDigest(block.subspan(payload_offset), algorithm));
-    }
-  }
+  AppendField(head, "WARC-Block-Digest", block_digest);
+  // A payload digest is only meaningful when the block has an entity body
+  // distinct from its headers.
+  AppendField(head, "WARC-Payload-Digest", payload_digest);
 
   const std::string_view content_type = header.content_type.empty()
                                             ? DefaultContentType(header.type)
@@ -186,10 +191,32 @@ std::vector<uint8_t> SerializeRecord(const RecordHeader& header,
 
   // Content-Length is mandatory and must match the block exactly; readers use
   // it to find the next record rather than scanning for a delimiter.
-  AppendField(head, "Content-Length", base::NumberToString(block.size()));
+  AppendField(head, "Content-Length", base::NumberToString(content_length));
 
   // Blank line terminates the header.
   head.append(kCrlf);
+  return head;
+}
+
+}  // namespace
+
+std::vector<uint8_t> SerializeRecord(const RecordHeader& header,
+                                     base::span<const uint8_t> block,
+                                     size_t payload_offset,
+                                     DigestAlgorithm algorithm) {
+  CHECK_LE(payload_offset, block.size());
+
+  std::string block_digest;
+  std::string payload_digest;
+  if (algorithm != DigestAlgorithm::kNone) {
+    block_digest = ComputeDigest(block, algorithm);
+    if (payload_offset < block.size()) {
+      payload_digest = ComputeDigest(block.subspan(payload_offset), algorithm);
+    }
+  }
+
+  const std::string head =
+      BuildHead(header, block.size(), block_digest, payload_digest);
 
   std::vector<uint8_t> out;
   out.reserve(head.size() + block.size() + kRecordSeparator.size());
@@ -197,6 +224,15 @@ std::vector<uint8_t> SerializeRecord(const RecordHeader& header,
   out.insert(out.end(), block.begin(), block.end());
   out.insert(out.end(), kRecordSeparator.begin(), kRecordSeparator.end());
   return out;
+}
+
+std::vector<uint8_t> SerializeRecordHeader(const RecordHeader& header,
+                                           uint64_t content_length,
+                                           std::string_view block_digest,
+                                           std::string_view payload_digest) {
+  const std::string head =
+      BuildHead(header, content_length, block_digest, payload_digest);
+  return std::vector<uint8_t>(head.begin(), head.end());
 }
 
 }  // namespace warc

@@ -234,10 +234,16 @@ interface NetworkService {
   // one that lets a reader decompress a single record without reading the
   // records before it.
   //
-  // The file must already be open for writing: the network service is sandboxed
-  // and cannot open arbitrary paths itself.
+  // |spill_file| is scratch space for resources too large to hold in memory
+  // while their record is assembled; it is truncated and reused, and none of
+  // its contents reach the archive except through a record. It may be null, in
+  // which case such bodies stay in memory under a cap.
+  //
+  // Both files must already be open: the network service is sandboxed and
+  // cannot open arbitrary paths itself. |spill_file| must be readable as well
+  // as writable, since the archive writer streams it back out.
   StartWarcRecording(mojo_base.mojom.File file, string filename,
-                     bool compress_records);
+                     bool compress_records, mojo_base.mojom.File? spill_file);
 
   // Creates a new network context with the given parameters.
   // This method is not used on Desktop (excluding Android Desktop) when the

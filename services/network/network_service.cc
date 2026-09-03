@@ -504,13 +504,11 @@ void NetworkService::Initialize(mojom::NetworkServiceParamsPtr params,
   first_party_sets_manager_ =
       std::make_unique<FirstPartySetsManager>(params->first_party_sets_enabled);
 
-
 #if BUILDFLAG(IS_CT_SUPPORTED)
   constexpr size_t kMaxSCTAuditingCacheEntries = 1024;
   sct_auditing_cache_ =
       std::make_unique<SCTAuditingCache>(kMaxSCTAuditingCacheEntries);
 #endif
-
 }
 
 NetworkService::~NetworkService() {
@@ -1354,7 +1352,8 @@ void NetworkService::GetVrpFlags(GetVrpFlagsCallback callback) {
 
 void NetworkService::StartWarcRecording(base::File file,
                                         const std::string& filename,
-                                        bool compress_records) {
+                                        bool compress_records,
+                                        base::File spill_file) {
   if (!file.IsValid()) {
     LOG(ERROR) << "WARC recording not started: file is not open for writing.";
     return;
@@ -1378,6 +1377,13 @@ void NetworkService::StartWarcRecording(base::File file,
       std::move(file), WarcRecorder::Limits(),
       compress_records ? warc::WarcWriter::Compression::kGzipPerRecord
                        : warc::WarcWriter::Compression::kNone);
+  if (spill_file.IsValid()) {
+    warc_recorder_->SetSpillFile(std::move(spill_file));
+  } else {
+    LOG(WARNING) << "WARC recording: no spill file, so a resource larger than "
+                    "the in-memory cap will be truncated rather than archived "
+                    "whole.";
+  }
   // The warcinfo record describes the capture and must precede the exchanges
   // it accounts for.
   warc_recorder_->WriteWarcinfo(filename);

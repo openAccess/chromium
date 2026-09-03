@@ -174,7 +174,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   void SetSSLKeyLogFile(base::File file) override;
   void StartWarcRecording(base::File file,
                           const std::string& filename,
-                          bool compress_records) override;
+                          bool compress_records,
+                          base::File spill_file) override;
   void CreateNetworkContext(
       mojo::PendingReceiver<mojom::NetworkContext> receiver,
       mojom::NetworkContextParamsPtr params) override;
@@ -345,7 +346,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   FirstPartySetsManager* first_party_sets_manager() const {
     return first_party_sets_manager_.get();
   }
-
 
   void set_host_resolver_factory_for_testing(
       std::unique_ptr<net::HostResolver::Factory> host_resolver_factory) {
@@ -611,7 +611,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
 #if BUILDFLAG(IS_LINUX)
   mojo::Remote<mojom::GssapiLibraryLoadObserver> gssapi_library_load_observer_;
 #endif  // BUILDFLAG(IS_LINUX)
-
 
   bool exclusive_cookie_database_locking_ = true;
 

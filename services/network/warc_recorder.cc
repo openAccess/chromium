@@ -197,8 +197,57 @@ void WarcExchangeRecorder::SetBodyIsWireFormat(bool is_wire_format) {
   body_is_wire_format_ = is_wire_format;
 }
 
+void WarcExchangeRecorder::SpillBodyOver(
+    size_t threshold,
+    SpillFactory spill_factory,
+    base::RepeatingCallback<void(base::File)> return_file) {
+  spill_threshold_ = threshold;
+  spill_factory_ = std::move(spill_factory);
+  return_spill_file_ = std::move(return_file);
+}
+
+bool WarcExchangeRecorder::BeginSpill() {
+  // A decoded body has its header block rewritten at emit time, which would
+  // not match a block digest taken as the bytes streamed past.
+  if (!body_is_wire_format_ || !spill_factory_) {
+    return false;
+  }
+  std::unique_ptr<warc::WarcBodySpill> spill = spill_factory_.Run();
+  if (!spill) {
+    return false;
+  }
+
+  block_hasher_.emplace(crypto::hash::HashKind::kSha1);
+  payload_hasher_.emplace(crypto::hash::HashKind::kSha1);
+  // The block is the HTTP header block followed by the body, so the block
+  // digest starts from the head.
+  block_hasher_->Update(base::as_byte_span(response_head_));
+  block_hasher_->Update(body_);
+  payload_hasher_->Update(body_);
+
+  spill->Append(std::move(body_));
+  body_.clear();
+  spill_ = std::move(spill);
+  return true;
+}
+
 void WarcExchangeRecorder::AddBodyBytes(base::span<const uint8_t> bytes) {
   if (finished_ || bytes.empty()) {
+    return;
+  }
+
+  if (spill_) {
+    block_hasher_->Update(bytes);
+    payload_hasher_->Update(bytes);
+    spill_->Append(std::vector<uint8_t>(bytes.begin(), bytes.end()));
+    return;
+  }
+
+  // Past the threshold the body goes to disk, so nothing further is capped:
+  // the point of spilling is that size stops costing memory.
+  if (spill_threshold_ && body_.size() + bytes.size() > *spill_threshold_ &&
+      BeginSpill()) {
+    AddBodyBytes(bytes);
     return;
   }
 
@@ -279,6 +328,11 @@ void WarcExchangeRecorder::EmitRecords() {
     header.warcinfo_id = warcinfo_id_;
     header.concurrent_to = request_id;
 
+    if (spill_) {
+      EmitSpilledResponseRecord(header);
+      return;
+    }
+
     // When the body reaching us was already decoded, the recorded headers must
     // be corrected to describe what is actually stored -- but only if they
     // claim an encoding in the first place.
@@ -294,6 +348,31 @@ void WarcExchangeRecorder::EmitRecords() {
 
     writer_->AddRecord(warc::SerializeRecord(header, block, payload_offset,
                                              warc::DigestAlgorithm::kSha1));
+  }
+}
+
+void WarcExchangeRecorder::EmitSpilledResponseRecord(
+    const warc::RecordHeader& header) {
+  // No more bytes can arrive, so the digests are final even though the block
+  // itself is on disk and never was in memory whole.
+  std::vector<uint8_t> block_digest(crypto::hash::kSha1Size);
+  std::vector<uint8_t> payload_digest(crypto::hash::kSha1Size);
+  block_hasher_->Finish(block_digest);
+  payload_hasher_->Finish(payload_digest);
+
+  const uint64_t body_size = spill_->size();
+  std::vector<uint8_t> head = warc::SerializeRecordHeader(
+      header, response_head_.size() + body_size,
+      warc::LabelDigest(block_digest, warc::DigestAlgorithm::kSha1),
+      warc::LabelDigest(payload_digest, warc::DigestAlgorithm::kSha1));
+  // Only the body was spilled, so the HTTP header block still precedes it.
+  head.insert(head.end(), response_head_.begin(), response_head_.end());
+
+  // No waiting is needed: the spill wrote on the archive's own file sequence,
+  // so every append is already ordered ahead of this record.
+  if (writer_) {
+    writer_->AddRecordWithSpilledBody(std::move(head), std::move(spill_),
+                                      body_size, return_spill_file_);
   }
 }
 
@@ -323,9 +402,46 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder() {
 }
 
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder() {
-  return std::make_unique<WarcExchangeRecorder>(
+  auto recorder = std::make_unique<WarcExchangeRecorder>(
       writer_weak_factory_.GetWeakPtr(), limits_.max_completion_body_bytes,
       warcinfo_id_);
+  recorder->SpillBodyOver(
+      limits_.spill_threshold_bytes,
+      // A WeakPtr cannot bind to a method that returns a value, and an
+      // exchange recorder may outlive the session recorder.
+      base::BindRepeating(
+          [](base::WeakPtr<WarcRecorder> self)
+              -> std::unique_ptr<warc::WarcBodySpill> {
+            return self ? self->TakeBodySpill() : nullptr;
+          },
+          weak_factory_.GetWeakPtr()),
+      base::BindRepeating(&WarcRecorder::ReturnSpillFile,
+                          weak_factory_.GetWeakPtr()));
+  return recorder;
+}
+
+void WarcRecorder::SetSpillFile(base::File file) {
+  spill_file_ = std::move(file);
+}
+
+std::unique_ptr<warc::WarcBodySpill> WarcRecorder::TakeBodySpill() {
+  if (!spill_file_.IsValid()) {
+    return nullptr;
+  }
+  // Start from an empty file: what a previous completion left behind is not
+  // part of this one's block.
+  if (!spill_file_.SetLength(0)) {
+    return nullptr;
+  }
+  spill_file_.Seek(base::File::FROM_BEGIN, 0);
+  if (!writer_) {
+    return nullptr;
+  }
+  return writer_->CreateBodySpill(std::move(spill_file_));
+}
+
+void WarcRecorder::ReturnSpillFile(base::File file) {
+  spill_file_ = std::move(file);
 }
 
 void WarcRecorder::WriteWarcinfo(const std::string& filename) {

@@ -140,10 +140,28 @@ std::vector<uint8_t> SerializeRecord(const RecordHeader& header,
                                      size_t payload_offset,
                                      DigestAlgorithm algorithm);
 
+// Serializes only a record's header, for a record whose block is too large to
+// hold in memory: the block and the trailing record separator follow the
+// returned bytes.
+//
+// `content_length` is the block's full length, and the digests are supplied by
+// the caller because by the time this is called the block is on disk, having
+// been hashed as it was produced. Either digest may be empty to omit it.
+std::vector<uint8_t> SerializeRecordHeader(const RecordHeader& header,
+                                           uint64_t content_length,
+                                           std::string_view block_digest,
+                                           std::string_view payload_digest);
+
 // Builds the block for a warcinfo record: "application/warc-fields" content
 // describing the capture, given as ordered name/value pairs.
 std::vector<uint8_t> BuildWarcinfoBlock(
     const std::vector<std::pair<std::string, std::string>>& fields);
+
+// Labels an already-computed raw digest, e.g. "sha1:AAMB5AZUUZ7ZCOVJPGA...".
+// For a block hashed incrementally as it streamed past, which is the only way
+// to digest one that was never in memory whole.
+std::string LabelDigest(base::span<const uint8_t> digest,
+                        DigestAlgorithm algorithm);
 
 // Returns the labeled digest of `data`, e.g. "sha1:AAMB5AZUUZ7ZCOVJPGA...".
 // The digest is unpadded base32 as WARC tooling expects. Returns an empty

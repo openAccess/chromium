@@ -14,6 +14,7 @@
 #include "base/files/file.h"
 #include "base/memory/ref_counted.h"
 #include "base/task/sequenced_task_runner.h"
+#include "components/warc/warc_body_spill.h"
 
 namespace warc {
 
@@ -66,19 +67,25 @@ class WarcWriter {
   // dropped because the queue was over budget.
   bool AddRecord(std::vector<uint8_t> record);
 
-  // Queues a record whose block is too large to hold in memory: `head` is the
-  // WARC header and everything preceding the spilled bytes, and the first
-  // `body_size` bytes of `body` complete the block. The record separator is
-  // appended here, so `head` must not already carry one.
+  // Returns a spill for a block too large to hold in memory, writing into
+  // `file` on this writer's own file sequence. That shared sequence is what
+  // orders the spilled bytes ahead of the record that streams them, so no
+  // completion signal is needed between the two -- and none could be relied
+  // on, since recording can stop while writes are still queued.
+  std::unique_ptr<WarcBodySpill> CreateBodySpill(base::File file);
+
+  // Queues a record whose block is partly on disk: `head` is the WARC header
+  // and everything preceding the spilled bytes, and the first `body_size`
+  // bytes of `spill` complete the block. The record separator is appended
+  // here, so `head` must not already carry one.
   //
   // Only the head counts against the queue's byte budget, since the body never
-  // enters memory: it is streamed from `body` straight into the archive on the
-  // file sequence. `body` is consumed, and returned through `on_written` once
-  // the record has been written, so the caller can reuse or release it --
-  // reusing it any earlier would corrupt a record still being streamed.
+  // enters memory. The spill's file is handed to `on_written` once the record
+  // has been written -- or dropped -- so the caller can reuse it; reusing it
+  // any earlier would corrupt a record still being streamed out of it.
   bool AddRecordWithSpilledBody(
       std::vector<uint8_t> head,
-      base::File body,
+      std::unique_ptr<WarcBodySpill> spill,
       uint64_t body_size,
       base::OnceCallback<void(base::File)> on_written);
 
