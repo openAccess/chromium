@@ -9669,6 +9669,14 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kRendererSideContentDecodingDescription, kOsAll,
      FEATURE_VALUE_TYPE(network::features::kRendererSideContentDecoding)},
 
+    // Takes a path rather than a boolean, so it needs the text-input type.
+    // Setting it also enables RendererSideContentDecoding above, which is what
+    // lets bodies be archived exactly as they arrived; see
+    // GetSwitchDependentFeatureOverrides.
+    {"warc-output", flag_descriptions::kWarcOutputName,
+     flag_descriptions::kWarcOutputDescription, kOsDesktop,
+     STRING_VALUE_TYPE(network::switches::kWarcOutput, "")},
+
 #if BUILDFLAG(IS_ANDROID)
     {"external-navigation-debug-logs",
      flag_descriptions::kExternalNavigationDebugLogsName,
@@ -13205,7 +13213,6 @@ const FeatureEntry kFeatureEntries[] = {
      flag_descriptions::kApb144Patch4Description, kOsAndroid,
      FEATURE_VALUE_TYPE(chrome::android::kApb144Patch4)},
 #endif
-
 
     {"autofill-enable-wallet-branding-v2",
      flag_descriptions::kAutofillEnableWalletBrandingV2Name,

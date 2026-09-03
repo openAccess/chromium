@@ -5035,6 +5035,16 @@ inline constexpr char kWalletServiceUseSandboxName[] =
 inline constexpr char kWalletServiceUseSandboxDescription[] =
     "For developers: use the sandbox service for Google Payments API calls.";
 
+inline constexpr char kWarcOutputName[] = "Record traffic as a WARC archive";
+inline constexpr char kWarcOutputDescription[] =
+    "Writes every HTTP request and response handled by the browser, bodies "
+    "included, to the given path as a WARC archive (ISO 28500). A path ending "
+    "in \".gz\" is compressed, one gzip member per record. Because this "
+    "records everything the browser sends and receives -- including "
+    "credentials, cookies and personal data -- treat the resulting file as "
+    "sensitive. Applies to the whole browser, not one tab, and takes effect "
+    "after a restart.";
+
 inline constexpr char kWallpaperFastRefreshName[] =
     "Enable shortened wallpaper daily refresh interval for manual testing";
 inline constexpr char kWallpaperFastRefreshDescription[] =
@@ -5370,7 +5380,6 @@ inline constexpr char kSemanticEmbedderAPIDescription[] =
     "embeddings with a built-in model in Chrome. "
     "The API may be subject to changes including the supported options. "
     "Please refer to the built-in AI documentation [1] for details.";
-
 
 inline constexpr char kSummarizerAPIWithPerformancePreferenceName[] =
     "Summarizer API Performance Preference";
@@ -5859,7 +5868,6 @@ inline constexpr char kApb144Patch4Name[] = "Apb144Patch4";
 inline constexpr char kApb144Patch4Description[] =
     "Enables the fourth patch for APB in 144.";
 
-
 inline constexpr char kApb144Patch6Name[] = "Apb144Patch6";
 inline constexpr char kApb144Patch6Description[] =
     "Enables the sixth patch for APB in 144";
@@ -6201,7 +6209,6 @@ inline constexpr char kEnableEscapeHandlingForSecondaryActivitiesName[] =
     "Enable escape handling for secondary activities and native pages.";
 inline constexpr char kEnableEscapeHandlingForSecondaryActivitiesDescription[] =
     "Enables handling escape events on secondary activities and native pages.";
-
 
 inline constexpr char kEnableSwipeToSwitchPaneName[] =
     "Enable Swipe To Switch Pane";
