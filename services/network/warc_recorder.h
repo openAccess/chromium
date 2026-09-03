@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -51,11 +52,14 @@ namespace network {
 // be indistinguishable from a complete one.
 class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
  public:
-  // `warcinfo_id` identifies the warcinfo record describing this capture, and
-  // is stamped on every record so a reader can attribute them to this run.
+  // `warcinfo_id` yields the record id of the warcinfo describing this
+  // exchange's browsing context, which is stamped on every record so a reader
+  // can attribute it. It is resolved when the records are emitted, not now, so
+  // that an exchange which archives nothing does not leave behind a warcinfo
+  // describing nothing.
   WarcExchangeRecorder(base::WeakPtr<warc::WarcWriter> writer,
                        size_t max_body_bytes,
-                       const std::string& warcinfo_id);
+                       base::RepeatingCallback<std::string()> warcinfo_id);
 
   WarcExchangeRecorder(const WarcExchangeRecorder&) = delete;
   WarcExchangeRecorder& operator=(const WarcExchangeRecorder&) = delete;
@@ -144,7 +148,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
 
   base::WeakPtr<warc::WarcWriter> writer_;
   const size_t max_body_bytes_;
-  const std::string warcinfo_id_;
+  const base::RepeatingCallback<std::string()> warcinfo_id_;
 
   GURL target_url_;
   base::Time date_;
@@ -209,14 +213,26 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
 
   ~WarcRecorder();
 
-  // Returns a recorder for one exchange.
-  std::unique_ptr<WarcExchangeRecorder> CreateExchangeRecorder();
+  // Returns a recorder for one exchange. `browsing_context` is the serialized
+  // top-level origin the request belongs to, or empty for a request no page is
+  // responsible for -- the browser's own background traffic.
+  //
+  // Each distinct context gets a warcinfo record of its own, which is how the
+  // format groups records inside one file. WARC 1.1 makes WARC-Warcinfo-ID
+  // override the positional association a warcinfo otherwise implies ("the
+  // WARC-Warcinfo-ID field value overrides any association with a previously
+  // occurring warcinfo record"), so contexts may interleave freely -- which
+  // they do, since a browser loads several pages at once.
+  std::unique_ptr<WarcExchangeRecorder> CreateExchangeRecorder(
+      const std::string& browsing_context);
 
   // Returns a recorder for a whole-resource fetch made to complete a resource
   // the page only requested ranges of. Such a body goes to disk rather than
   // memory once it grows past a threshold, so a completed video costs the
-  // archive no more memory than a page subresource.
-  std::unique_ptr<WarcExchangeRecorder> CreateCompletionRecorder();
+  // archive no more memory than a page subresource. It belongs to the same
+  // browsing context as the ranged requests that prompted it.
+  std::unique_ptr<WarcExchangeRecorder> CreateCompletionRecorder(
+      const std::string& browsing_context);
 
   // Hands the network service a file to spill large bodies into. The service
   // is sandboxed and cannot open one itself, so the browser opens it alongside
@@ -233,8 +249,20 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   std::unique_ptr<warc::WarcWriter> writer_;
   const Limits limits_;
 
-  // Identifier of this capture's warcinfo record, empty until it is written.
-  std::string warcinfo_id_;
+  // Name recorded in the file-level warcinfo record, repeated as `isPartOf` in
+  // each context's own warcinfo.
+  std::string filename_;
+
+  // Warcinfo record id per browsing context, minted on first sight of one.
+  std::map<std::string, std::string> context_warcinfo_ids_;
+
+  // Resolves, on demand, the warcinfo id describing `browsing_context`.
+  base::RepeatingCallback<std::string()> WarcinfoResolver(
+      const std::string& browsing_context);
+
+  // Returns the warcinfo id describing `browsing_context`, writing that
+  // warcinfo record the first time the context actually archives something.
+  const std::string& WarcinfoIdForContext(const std::string& browsing_context);
 
   // The single spill file, absent while a completion is using it. Completions
   // run one at a time, so one file suffices; a completion that finds it gone

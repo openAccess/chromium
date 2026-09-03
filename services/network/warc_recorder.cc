@@ -19,6 +19,12 @@ namespace network {
 
 namespace {
 
+// Published location of the format this archive claims to follow, repeated in
+// every warcinfo record so each is self-describing.
+constexpr char kConformsTo[] =
+    "https://iipc.github.io/warc-specifications/specifications/warc-format/"
+    "warc-1.1/";
+
 // Pseudo-header names used by HTTP/2 and HTTP/3. They carry the information an
 // HTTP/1.x request line holds, and must not be emitted as ordinary header
 // lines.
@@ -107,10 +113,10 @@ std::string FindHeader(const net::HttpRawRequestHeaders& headers,
 WarcExchangeRecorder::WarcExchangeRecorder(
     base::WeakPtr<warc::WarcWriter> writer,
     size_t max_body_bytes,
-    const std::string& warcinfo_id)
+    base::RepeatingCallback<std::string()> warcinfo_id)
     : writer_(std::move(writer)),
       max_body_bytes_(max_body_bytes),
-      warcinfo_id_(warcinfo_id),
+      warcinfo_id_(std::move(warcinfo_id)),
       date_(base::Time::Now()) {}
 
 WarcExchangeRecorder::~WarcExchangeRecorder() {
@@ -291,6 +297,9 @@ void WarcExchangeRecorder::EmitRecords() {
   }
 
   const std::string target_uri = target_url_.spec();
+  // Resolved once: both records belong to the same context, and asking twice
+  // would be asking the recorder to mint the same warcinfo twice.
+  const std::string warcinfo_id = warcinfo_id_ ? warcinfo_id_.Run() : "";
 
   // The request record is written first and the response record points back at
   // it with WARC-Concurrent-To. This follows the exchange's chronology and
@@ -305,7 +314,7 @@ void WarcExchangeRecorder::EmitRecords() {
     header.date = date_;
     header.ip_address = ip_address_;
     header.protocol = protocol_;
-    header.warcinfo_id = warcinfo_id_;
+    header.warcinfo_id = warcinfo_id;
     header.record_id = warc::GenerateRecordId();
     request_id = header.record_id;
 
@@ -325,7 +334,7 @@ void WarcExchangeRecorder::EmitRecords() {
     header.ip_address = ip_address_;
     header.protocol = protocol_;
     header.truncated = truncated_reason_;
-    header.warcinfo_id = warcinfo_id_;
+    header.warcinfo_id = warcinfo_id;
     header.concurrent_to = request_id;
 
     if (spill_) {
@@ -396,14 +405,18 @@ WarcRecorder::~WarcRecorder() {
   }
 }
 
-std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder() {
+std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder(
+    const std::string& browsing_context) {
   return std::make_unique<WarcExchangeRecorder>(
-      writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes, warcinfo_id_);
+      writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
+      WarcinfoResolver(browsing_context));
 }
 
-std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder() {
+std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder(
+    const std::string& browsing_context) {
   auto recorder = std::make_unique<WarcExchangeRecorder>(
-      writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes, warcinfo_id_);
+      writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
+      WarcinfoResolver(browsing_context));
   recorder->EnableBodySpilling(
       // A WeakPtr cannot bind to a method that returns a value, and an
       // exchange recorder may outlive the session recorder.
@@ -443,25 +456,82 @@ void WarcRecorder::ReturnSpillFile(base::File file) {
 }
 
 void WarcRecorder::WriteWarcinfo(const std::string& filename) {
+  filename_ = filename;
+
+  // The file-level record, carrying WARC-Filename. Exchanges point at their own
+  // context's warcinfo rather than this one, which stands as the header for the
+  // file as a whole.
   warc::RecordHeader header;
   header.type = warc::RecordType::kWarcinfo;
   header.date = base::Time::Now();
   header.filename = filename;
   header.record_id = warc::GenerateRecordId();
 
-  // Remembered so every subsequent record can point back at this one.
-  warcinfo_id_ = header.record_id;
-
   const std::vector<uint8_t> block = warc::BuildWarcinfoBlock({
       {"software", "Chromium"},
       {"format", "WARC File Format 1.1"},
-      {"conformsTo",
-       "https://iipc.github.io/warc-specifications/specifications/warc-format/"
-       "warc-1.1/"},
+      {"conformsTo", kConformsTo},
   });
 
   writer_->AddRecord(warc::SerializeRecord(header, block, block.size(),
                                            warc::DigestAlgorithm::kSha1));
+}
+
+base::RepeatingCallback<std::string()> WarcRecorder::WarcinfoResolver(
+    const std::string& browsing_context) {
+  // An exchange can outlive the session recorder, in which case there is
+  // nothing left to attribute it to.
+  return base::BindRepeating(
+      [](base::WeakPtr<WarcRecorder> self,
+         const std::string& context) -> std::string {
+        return self ? self->WarcinfoIdForContext(context) : std::string();
+      },
+      weak_factory_.GetWeakPtr(), browsing_context);
+}
+
+const std::string& WarcRecorder::WarcinfoIdForContext(
+    const std::string& browsing_context) {
+  auto existing = context_warcinfo_ids_.find(browsing_context);
+  if (existing != context_warcinfo_ids_.end()) {
+    return existing->second;
+  }
+
+  warc::RecordHeader header;
+  header.type = warc::RecordType::kWarcinfo;
+  header.date = base::Time::Now();
+  header.record_id = warc::GenerateRecordId();
+
+  // The format defines no field for a browsing context, so the context is
+  // described in the warcinfo block -- free-form "application/warc-fields" --
+  // and records are bound to it by WARC-Warcinfo-ID. Nothing here is outside
+  // the standard: no new named field is invented, and a reader that does not
+  // care simply follows the id it already understands.
+  std::vector<std::pair<std::string, std::string>> fields = {
+      {"software", "Chromium"},
+      {"format", "WARC File Format 1.1"},
+      {"conformsTo", kConformsTo},
+  };
+  if (!filename_.empty()) {
+    fields.emplace_back("isPartOf", filename_);
+  }
+  if (browsing_context.empty()) {
+    fields.emplace_back(
+        "description",
+        "Requests no page is responsible for, such as the browser's own "
+        "background traffic");
+  } else {
+    fields.emplace_back("browsing-context", browsing_context);
+    fields.emplace_back("description",
+                        base::StrCat({"Requests made by the browsing context ",
+                                      browsing_context}));
+  }
+
+  const std::vector<uint8_t> block = warc::BuildWarcinfoBlock(fields);
+  writer_->AddRecord(warc::SerializeRecord(header, block, block.size(),
+                                           warc::DigestAlgorithm::kSha1));
+
+  return context_warcinfo_ids_.emplace(browsing_context, header.record_id)
+      .first->second;
 }
 
 }  // namespace network

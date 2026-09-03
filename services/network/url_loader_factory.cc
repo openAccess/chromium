@@ -388,12 +388,14 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
   if (context_->network_service() &&
       context_->network_service()->warc_recorder()) {
     warc_recorder_factory = base::BindRepeating(
-        [](base::WeakPtr<NetworkService> service)
+        [](base::WeakPtr<NetworkService> service,
+           const std::string& browsing_context)
             -> std::unique_ptr<WarcExchangeRecorder> {
           if (!service || !service->warc_recorder()) {
             return nullptr;
           }
-          return service->warc_recorder()->CreateExchangeRecorder();
+          return service->warc_recorder()->CreateExchangeRecorder(
+              browsing_context);
         },
         context_->network_service()->GetWeakPtr());
   }

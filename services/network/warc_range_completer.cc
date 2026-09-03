@@ -228,6 +228,11 @@ void WarcRangeCompleter::CompleteIfNeeded(const net::URLRequest& partial,
   queued.site_for_cookies = partial.site_for_cookies();
   queued.initiator = partial.initiator();
   queued.headers = partial.extra_request_headers();
+  const std::optional<url::Origin>& top_frame_origin =
+      partial.isolation_info().top_frame_origin();
+  if (top_frame_origin) {
+    queued.browsing_context = top_frame_origin->Serialize();
+  }
   for (const char* name : kRangeHeaders) {
     queued.headers.RemoveHeader(name);
   }
@@ -246,7 +251,8 @@ void WarcRangeCompleter::MaybeStartNext() {
     }
     ++started_;
     active_.push_back(std::make_unique<Fetch>(
-        queued, url_request_context_, recorder_->CreateCompletionRecorder(),
+        queued, url_request_context_,
+        recorder_->CreateCompletionRecorder(queued.browsing_context),
         base::BindOnce(&WarcRangeCompleter::OnFetchDone,
                        weak_factory_.GetWeakPtr())));
     active_.back()->Start();

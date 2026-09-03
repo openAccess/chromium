@@ -14,7 +14,10 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/warc/warc_test_util.h"
@@ -33,6 +36,68 @@ scoped_refptr<net::HttpResponseHeaders> MakeResponseHeaders(
     std::string_view raw) {
   return base::MakeRefCounted<net::HttpResponseHeaders>(
       net::HttpUtil::AssembleRawHeaders(raw));
+}
+
+// A parsed view of an archive, so tests can assert on a record's fields rather
+// than on where a string happens to fall in the file.
+struct ParsedRecord {
+  std::string Field(std::string_view name) const {
+    const std::string prefix = base::StrCat({name, ": "});
+    for (std::string_view line : base::SplitStringPiece(
+             head, "\r\n", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+      if (base::StartsWith(line, prefix,
+                           base::CompareCase::INSENSITIVE_ASCII)) {
+        return std::string(line.substr(prefix.size()));
+      }
+    }
+    return std::string();
+  }
+
+  std::string head;
+  std::string block;
+};
+
+std::vector<ParsedRecord> ParseRecords(std::string_view archive) {
+  std::vector<ParsedRecord> records;
+  size_t pos = 0;
+  while (true) {
+    const size_t start = archive.find("WARC/1.1\r\n", pos);
+    if (start == std::string_view::npos) {
+      break;
+    }
+    const size_t head_end = archive.find("\r\n\r\n", start);
+    if (head_end == std::string_view::npos) {
+      break;
+    }
+    ParsedRecord record;
+    record.head = std::string(archive.substr(start, head_end - start));
+    size_t length = 0;
+    if (!base::StringToSizeT(record.Field("Content-Length"), &length)) {
+      break;
+    }
+    const size_t block_start = head_end + 4;
+    record.block = std::string(archive.substr(block_start, length));
+    records.push_back(std::move(record));
+    // Past the block and the two CRLFs that separate records.
+    pos = block_start + length + 4;
+  }
+  return records;
+}
+
+// The record of `type` whose block contains `needle`, or the first of `type`
+// when `needle` is empty.
+const ParsedRecord* FindRecord(const std::vector<ParsedRecord>& records,
+                               std::string_view type,
+                               std::string_view needle = "") {
+  for (const ParsedRecord& record : records) {
+    if (record.Field("WARC-Type") != type) {
+      continue;
+    }
+    if (needle.empty() || record.block.find(needle) != std::string::npos) {
+      return &record;
+    }
+  }
+  return nullptr;
 }
 
 class WarcRecorderTest : public testing::Test {
@@ -70,7 +135,7 @@ TEST_F(WarcRecorderTest, WritesRequestThenResponseRecord) {
   auto recorder = MakeRecorder();
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/page"));
 
     net::HttpRawRequestHeaders request_headers;
@@ -111,7 +176,7 @@ TEST_F(WarcRecorderTest, ResponseRecordIsConcurrentToRequestRecord) {
   auto recorder = MakeRecorder();
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/"));
 
     net::HttpRawRequestHeaders request_headers;
@@ -123,18 +188,14 @@ TEST_F(WarcRecorderTest, ResponseRecordIsConcurrentToRequestRecord) {
 
   const std::string archive = FinishAndRead(std::move(recorder));
 
-  // The request is written first, so the first record id in the file is its
-  // own; the response must point back at it.
-  constexpr std::string_view kRecordIdField = "WARC-Record-ID: ";
-  const size_t id_pos = archive.find(kRecordIdField);
-  ASSERT_NE(id_pos, std::string::npos);
-  const size_t id_start = id_pos + kRecordIdField.size();
-  const size_t id_end = archive.find("\r\n", id_start);
-  ASSERT_NE(id_end, std::string::npos);
-  const std::string request_id = archive.substr(id_start, id_end - id_start);
+  const std::vector<ParsedRecord> records = ParseRecords(archive);
+  const ParsedRecord* request = FindRecord(records, "request");
+  const ParsedRecord* response = FindRecord(records, "response");
+  ASSERT_TRUE(request);
+  ASSERT_TRUE(response);
 
-  EXPECT_NE(archive.find("WARC-Concurrent-To: " + request_id),
-            std::string::npos);
+  EXPECT_EQ(request->Field("WARC-Record-ID"),
+            response->Field("WARC-Concurrent-To"));
 }
 
 TEST_F(WarcRecorderTest, RecordsCarryWarcinfoId) {
@@ -142,7 +203,7 @@ TEST_F(WarcRecorderTest, RecordsCarryWarcinfoId) {
   recorder->WriteWarcinfo("out.warc");
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/"));
 
     net::HttpRawRequestHeaders request_headers;
@@ -153,21 +214,27 @@ TEST_F(WarcRecorderTest, RecordsCarryWarcinfoId) {
   }
 
   const std::string archive = FinishAndRead(std::move(recorder));
+  const std::vector<ParsedRecord> records = ParseRecords(archive);
 
-  // The warcinfo record is written first, so the first record id is its own.
-  constexpr std::string_view kRecordIdField = "WARC-Record-ID: ";
-  const size_t id_pos = archive.find(kRecordIdField);
-  ASSERT_NE(id_pos, std::string::npos);
-  const size_t id_start = id_pos + kRecordIdField.size();
-  const size_t id_end = archive.find("\r\n", id_start);
-  ASSERT_NE(id_end, std::string::npos);
-  const std::string warcinfo_id = archive.substr(id_start, id_end - id_start);
+  // Records are attributed to the warcinfo describing their browsing context,
+  // not to the file-level one, which stands as the header for the whole file.
+  const ParsedRecord* context_info =
+      FindRecord(records, "warcinfo", "browsing-context: https://example.org");
+  ASSERT_TRUE(context_info);
+  const std::string context_id = context_info->Field("WARC-Record-ID");
+  ASSERT_FALSE(context_id.empty());
 
-  // Both the request and the response must be attributed to that capture.
-  const std::string field = "WARC-Warcinfo-ID: " + warcinfo_id;
-  const size_t first = archive.find(field);
-  ASSERT_NE(first, std::string::npos);
-  EXPECT_NE(archive.find(field, first + 1), std::string::npos);
+  const ParsedRecord* request = FindRecord(records, "request");
+  const ParsedRecord* response = FindRecord(records, "response");
+  ASSERT_TRUE(request);
+  ASSERT_TRUE(response);
+  EXPECT_EQ(context_id, request->Field("WARC-Warcinfo-ID"));
+  EXPECT_EQ(context_id, response->Field("WARC-Warcinfo-ID"));
+
+  // And the file-level record is still there, carrying the archive's name.
+  const ParsedRecord* file_info = FindRecord(records, "warcinfo", "software:");
+  ASSERT_TRUE(file_info);
+  EXPECT_EQ("out.warc", file_info->Field("WARC-Filename"));
 }
 
 TEST_F(WarcRecorderTest, PreservesCompressedBodyAndItsContentEncoding) {
@@ -178,7 +245,7 @@ TEST_F(WarcRecorderTest, PreservesCompressedBodyAndItsContentEncoding) {
                                            0x00, 0xff, 0x42};
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/gz"));
     exchange->SetBodyIsWireFormat(true);
     exchange->SetResponseHeaders(
@@ -200,7 +267,7 @@ TEST_F(WarcRecorderTest, DecodedBodyHasEncodingHeadersRewritten) {
   auto recorder = MakeRecorder();
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/gz"));
     // The network stack decoded the body before we saw it.
     exchange->SetBodyIsWireFormat(false);
@@ -230,7 +297,7 @@ TEST_F(WarcRecorderTest, DecodedBodyDropsChunkedTransferEncoding) {
   auto recorder = MakeRecorder();
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/chunked"));
     exchange->SetBodyIsWireFormat(false);
     exchange->SetResponseHeaders(
@@ -253,7 +320,7 @@ TEST_F(WarcRecorderTest, MarksOversizedBodyAsLengthTruncated) {
   auto recorder = MakeRecorder(limits);
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/big"));
     exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
 
@@ -275,7 +342,7 @@ TEST_F(WarcRecorderTest, ReconstructsRequestLineForHttp2) {
   auto recorder = MakeRecorder();
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/h2"));
 
     // HTTP/2 carries pseudo-headers and no request line.
@@ -309,7 +376,7 @@ TEST_F(WarcRecorderTest, AbandonedExchangeIsStillRecorded) {
   auto recorder = MakeRecorder();
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/aborted"));
     exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
     exchange->AddBodyBytes(base::as_byte_span(std::string_view("partial")));
@@ -328,7 +395,7 @@ TEST_F(WarcRecorderTest, ExchangeWithoutValidUrlIsDropped) {
   auto recorder = MakeRecorder();
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
     exchange->Finish();
   }
@@ -351,7 +418,7 @@ TEST_F(WarcRecorderTest, WarcinfoDescribesTheCapture) {
 
 TEST_F(WarcRecorderTest, ExchangeOutlivingRecorderDoesNotCrash) {
   auto recorder = MakeRecorder();
-  auto exchange = recorder->CreateExchangeRecorder();
+  auto exchange = recorder->CreateExchangeRecorder("https://example.org");
   exchange->SetTargetUrl(GURL("https://example.org/"));
   exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
 
@@ -369,7 +436,7 @@ TEST_F(WarcRecorderTest, GzipCaptureIsOneMemberPerRecord) {
   recorder->WriteWarcinfo("out.warc.gz");
 
   {
-    auto exchange = recorder->CreateExchangeRecorder();
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/page"));
 
     net::HttpRawRequestHeaders request_headers;
@@ -386,23 +453,27 @@ TEST_F(WarcRecorderTest, GzipCaptureIsOneMemberPerRecord) {
 
   const std::string archive = FinishAndRead(std::move(recorder));
 
-  // warcinfo, request, response — each in a member of its own, so a CDX index
-  // built over this archive can point at a record and a reader can decompress
-  // just that record.
+  // The file's warcinfo, the browsing context's warcinfo, then the request and
+  // response — each in a member of its own, so a CDX index built over this
+  // archive can point at a record and a reader can decompress just that one.
   const std::optional<std::vector<std::string>> members =
       warc::InflateGzipMembers(archive);
   ASSERT_TRUE(members.has_value());
-  ASSERT_EQ(3u, members->size());
+  ASSERT_EQ(4u, members->size());
 
   EXPECT_NE((*members)[0].find("WARC-Type: warcinfo"), std::string::npos);
   EXPECT_NE((*members)[0].find("WARC-Filename: out.warc.gz"),
             std::string::npos);
 
-  EXPECT_NE((*members)[1].find("WARC-Type: request"), std::string::npos);
-  EXPECT_NE((*members)[1].find("GET /page HTTP/1.1"), std::string::npos);
+  EXPECT_NE((*members)[1].find("WARC-Type: warcinfo"), std::string::npos);
+  EXPECT_NE((*members)[1].find("browsing-context: https://example.org"),
+            std::string::npos);
 
-  EXPECT_NE((*members)[2].find("WARC-Type: response"), std::string::npos);
-  EXPECT_NE((*members)[2].find("<html>hi</html>"), std::string::npos);
+  EXPECT_NE((*members)[2].find("WARC-Type: request"), std::string::npos);
+  EXPECT_NE((*members)[2].find("GET /page HTTP/1.1"), std::string::npos);
+
+  EXPECT_NE((*members)[3].find("WARC-Type: response"), std::string::npos);
+  EXPECT_NE((*members)[3].find("<html>hi</html>"), std::string::npos);
 }
 
 TEST_F(WarcRecorderTest, SpilledBodyIsArchivedWholeWithCorrectDigests) {
@@ -424,7 +495,7 @@ TEST_F(WarcRecorderTest, SpilledBodyIsArchivedWholeWithCorrectDigests) {
   body.replace(body.size() - 5, 5, "LAST!");
 
   {
-    auto exchange = recorder->CreateCompletionRecorder();
+    auto exchange = recorder->CreateCompletionRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/big.mp4"));
     exchange->SetBodyIsWireFormat(true);
     exchange->SetResponseHeaders(
@@ -475,7 +546,7 @@ TEST_F(WarcRecorderTest, WithoutASpillFileTheBodyStaysCapped) {
   auto recorder = MakeRecorder(limits);
 
   {
-    auto exchange = recorder->CreateCompletionRecorder();
+    auto exchange = recorder->CreateCompletionRecorder("https://example.org");
     exchange->SetTargetUrl(GURL("https://example.org/big.mp4"));
     exchange->SetBodyIsWireFormat(true);
     exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
@@ -487,6 +558,125 @@ TEST_F(WarcRecorderTest, WithoutASpillFileTheBodyStaysCapped) {
   const std::string archive = FinishAndRead(std::move(recorder));
   // Capped rather than lost, and marked so nobody mistakes it for complete.
   EXPECT_NE(archive.find("WARC-Truncated: length"), std::string::npos);
+}
+
+// Records the given exchange, so the grouping tests stay about grouping.
+void RecordExchange(WarcRecorder& recorder,
+                    const std::string& browsing_context,
+                    const GURL& url) {
+  auto exchange = recorder.CreateExchangeRecorder(browsing_context);
+  exchange->SetTargetUrl(url);
+  net::HttpRawRequestHeaders headers;
+  headers.set_request_line("GET / HTTP/1.1\r\n");
+  exchange->SetRequestHeaders(headers, "GET");
+  exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
+  exchange->Finish();
+}
+
+TEST_F(WarcRecorderTest, EachBrowsingContextGetsItsOwnWarcinfo) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
+  // Interleaved, as a browser loading two pages at once produces. The format
+  // copes because WARC-Warcinfo-ID overrides the positional association a
+  // warcinfo would otherwise imply.
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/2"));
+
+  const std::vector<ParsedRecord> records =
+      ParseRecords(FinishAndRead(std::move(recorder)));
+
+  const ParsedRecord* a_info =
+      FindRecord(records, "warcinfo", "browsing-context: https://a.example");
+  const ParsedRecord* b_info =
+      FindRecord(records, "warcinfo", "browsing-context: https://b.example");
+  ASSERT_TRUE(a_info);
+  ASSERT_TRUE(b_info);
+  EXPECT_NE(a_info->Field("WARC-Record-ID"), b_info->Field("WARC-Record-ID"));
+  // Each context's warcinfo says which archive it belongs to. WARC-Filename
+  // names the file and so stays on the file-level record; the link from a
+  // context back to it goes in the block, where warcinfo fields belong.
+  EXPECT_TRUE(a_info->Field("WARC-Filename").empty());
+  EXPECT_NE(a_info->block.find("isPartOf: out.warc"), std::string::npos);
+
+  // Every record is attributed to the context that made it.
+  int a_records = 0;
+  int b_records = 0;
+  for (const ParsedRecord& record : records) {
+    const std::string type = record.Field("WARC-Type");
+    if (type != "request" && type != "response") {
+      continue;
+    }
+    const std::string info = record.Field("WARC-Warcinfo-ID");
+    const bool is_a =
+        record.Field("WARC-Target-URI").find("a.example") != std::string::npos;
+    EXPECT_EQ(is_a ? a_info->Field("WARC-Record-ID")
+                   : b_info->Field("WARC-Record-ID"),
+              info);
+    (is_a ? a_records : b_records)++;
+  }
+  EXPECT_EQ(4, a_records);
+  EXPECT_EQ(2, b_records);
+}
+
+TEST_F(WarcRecorderTest, OneWarcinfoPerContextHoweverManyExchanges) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+
+  for (int i = 0; i < 5; ++i) {
+    RecordExchange(
+        *recorder, "https://a.example",
+        GURL(base::StrCat({"https://a.example/", base::NumberToString(i)})));
+  }
+
+  const std::vector<ParsedRecord> records =
+      ParseRecords(FinishAndRead(std::move(recorder)));
+
+  // A context is described once, not once per exchange.
+  int context_infos = 0;
+  for (const ParsedRecord& record : records) {
+    if (record.Field("WARC-Type") == "warcinfo" &&
+        record.block.find("browsing-context:") != std::string::npos) {
+      ++context_infos;
+    }
+  }
+  EXPECT_EQ(1, context_infos);
+}
+
+TEST_F(WarcRecorderTest, TrafficNoPageIsResponsibleForIsSeparated) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  // The browser's own background traffic has no top-level origin. Keeping it
+  // apart is the difference between an archive of a page and an archive of a
+  // page plus whatever Chrome happened to be doing.
+  RecordExchange(*recorder, "", GURL("https://update.googleapis.com/service"));
+
+  const std::vector<ParsedRecord> records =
+      ParseRecords(FinishAndRead(std::move(recorder)));
+
+  const ParsedRecord* page_info =
+      FindRecord(records, "warcinfo", "browsing-context: https://a.example");
+  const ParsedRecord* browser_info =
+      FindRecord(records, "warcinfo", "no page is responsible for");
+  ASSERT_TRUE(page_info);
+  ASSERT_TRUE(browser_info);
+  // The unattributed one names no context, since there is none to name.
+  EXPECT_EQ(browser_info->block.find("browsing-context:"), std::string::npos);
+
+  const ParsedRecord* update = nullptr;
+  for (const ParsedRecord& record : records) {
+    if (record.Field("WARC-Target-URI").find("update.googleapis") !=
+        std::string::npos) {
+      update = &record;
+      break;
+    }
+  }
+  ASSERT_TRUE(update);
+  EXPECT_EQ(browser_info->Field("WARC-Record-ID"),
+            update->Field("WARC-Warcinfo-ID"));
 }
 
 }  // namespace

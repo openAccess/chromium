@@ -97,6 +97,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRangeCompleter {
     net::IsolationInfo isolation_info;
     net::SiteForCookies site_for_cookies;
     std::optional<url::Origin> initiator;
+
+    // The completion belongs to the same browsing context as the ranged
+    // requests that prompted it, so it is grouped with them in the archive.
+    std::string browsing_context;
   };
 
   void MaybeStartNext();

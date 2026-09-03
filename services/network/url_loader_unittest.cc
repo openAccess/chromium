@@ -1060,8 +1060,9 @@ class URLLoaderTest : public testing::Test {
                    base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE),
         WarcRecorder::Limits(), warc::WarcWriter::Compression::kNone);
     warc_recorder_factory_ = base::BindLambdaForTesting(
-        [raw = recorder.get()]() -> std::unique_ptr<WarcExchangeRecorder> {
-          return raw->CreateExchangeRecorder();
+        [raw = recorder.get()](const std::string& browsing_context)
+            -> std::unique_ptr<WarcExchangeRecorder> {
+          return raw->CreateExchangeRecorder(browsing_context);
         });
     return recorder;
   }
@@ -2053,7 +2054,6 @@ TEST_F(URLLoaderTest, NonSecureUnknownToLoopbackAllow) {
   EXPECT_EQ(net::OK, LoadRequest(request));
 }
 
-
 TEST_F(URLLoaderTest, SecurePublicToLoopbackBlock) {
   auto client_security_state = NewSecurityState();
   client_security_state->is_web_secure_context = true;
@@ -2132,7 +2132,6 @@ TEST_F(URLLoaderTest, NonSecurePublicToLoopbackAllow) {
 
   EXPECT_EQ(net::OK, LoadRequest(request));
 }
-
 
 TEST_F(URLLoaderTest, SecureLocalToLoopbackDefault) {
   // This test presumes that LNA enforcement is enabled.
@@ -9202,7 +9201,6 @@ TEST_F(URLLoaderFakeTransportInfoTest,
             LoadRequest(request));
 }
 
-
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(URLLoaderTest, SocketTaggingWorks) {
   if (!net::CanGetTaggedBytes()) {
@@ -9334,7 +9332,8 @@ TEST_F(URLLoaderTest, PerformSyntheticResponseFallbackFailure) {
 
   // Create a data pipe with a very small buffer to cause
   // WriteSyntheticResponseFallbackBody to fail.
-  // The fallback body is 45 bytes, so 32 bytes should be enough to cause failure.
+  // The fallback body is 45 bytes, so 32 bytes should be enough to cause
+  // failure.
   mojo::ScopedDataPipeProducerHandle producer;
   mojo::ScopedDataPipeConsumerHandle consumer;
   MojoCreateDataPipeOptions options;
@@ -9348,7 +9347,8 @@ TEST_F(URLLoaderTest, PerformSyntheticResponseFallbackFailure) {
       base::MakeRefCounted<network::SharedDataPipeProducerHandle>(
           std::move(producer));
 
-  // Load the request and expect it to fail with net::ERR_INSUFFICIENT_RESOURCES.
+  // Load the request and expect it to fail with
+  // net::ERR_INSUFFICIENT_RESOURCES.
   EXPECT_EQ(net::ERR_INSUFFICIENT_RESOURCES, LoadRequest(request));
 }
 

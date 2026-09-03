@@ -110,11 +110,13 @@ class TrustTokenUrlLoaderInterceptor;
 class DevtoolsDurableMessageWriter;
 class WarcExchangeRecorder;
 
-// Mints a recorder for a single request/response exchange. Null when WARC
-// recording is off. Invoked once per redirect hop, since each hop is archived
-// as its own record pair.
+// Mints a recorder for a single request/response exchange, for the browsing
+// context given as the serialized top-level origin -- empty for a request no
+// page is responsible for. Null when WARC recording is off. Invoked once per
+// redirect hop, since each hop is archived as its own record pair.
 using WarcExchangeRecorderFactory =
-    base::RepeatingCallback<std::unique_ptr<WarcExchangeRecorder>()>;
+    base::RepeatingCallback<std::unique_ptr<WarcExchangeRecorder>(
+        const std::string&)>;
 
 // Asks for a whole-resource fetch of something the page requested only a range
 // of, so the archive holds a complete copy rather than fragments. Null when
@@ -506,6 +508,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
   // to the WARC recorder. No-op when recording is off.
   void FeedWarcResponseMetadata(const mojom::URLResponseHead& head);
 
+  // The browsing context this load belongs to, as the serialized top-level
+  // origin. Empty when no page is responsible for it, which is how the
+  // browser's own traffic is told apart from a page's.
+  std::string WarcBrowsingContext() const;
+
   // Adds response body bytes to the WARC record. Body bytes reach the client by
   // several routes — straight into the mojo buffer, by way of the SlopBucket
   // when that buffer is full, or into a discard buffer when the body is being
@@ -656,7 +663,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) URLLoader
   // This is used to determine whether it is allowed to use a dictionary when
   // there is a matching shared dictionary for the request.
   std::unique_ptr<SharedDictionaryAccessChecker> shared_dictionary_checker_;
-
 
   // Outlives `this`.
   const raw_ref<const cors::OriginAccessList> origin_access_list_;

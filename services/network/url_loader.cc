@@ -215,8 +215,9 @@ net::HttpRequestHeaders AttachCookies(const net::HttpRequestHeaders& headers,
         [&cookie](const net::cookie_util::ParsedRequestCookie& old_cookie) {
           return old_cookie.first == cookie.first;
         });
-    if (it != parsed_cookies.end())
+    if (it != parsed_cookies.end()) {
       continue;
+    }
 
     parsed_cookies.emplace_back(cookie.first, cookie.second);
   }
@@ -314,10 +315,12 @@ URLLoader::MaybeSyncURLLoaderClient::BindNewPipeAndPassReceiver() {
 }
 
 mojom::URLLoaderClient* URLLoader::MaybeSyncURLLoaderClient::Get() {
-  if (sync_client_)
+  if (sync_client_) {
     return sync_client_.get();
-  if (mojo_client_)
+  }
+  if (mojo_client_) {
     return mojo_client_.get();
+  }
   return nullptr;
 }
 
@@ -436,10 +439,6 @@ URLLoader::URLLoader(
       warc_range_completion_(std::move(warc_range_completion)) {
   DCHECK(delete_callback_);
 
-  if (warc_recorder_factory_) {
-    warc_recorder_ = warc_recorder_factory_.Run();
-  }
-
   // To minimize performance overhead and UMA report volume, this metric is
   // only logged for extremely long URLs, and aims to track their prevalence.
   if (request.url.GetWithoutRef().spec().length() > 8192) {
@@ -543,6 +542,12 @@ URLLoader::URLLoader(
   url_loader_util::ConfigureUrlRequest(request, *factory_params_,
                                        *origin_access_list_, *url_request_,
                                        shared_resource_checker);
+  // Minted only now: which browsing context this load belongs to comes from the
+  // isolation info, which ConfigureUrlRequest above is what populates.
+  if (warc_recorder_factory_) {
+    warc_recorder_ = warc_recorder_factory_.Run(WarcBrowsingContext());
+  }
+
   // A WARC response record is supposed to hold the payload exactly as it came
   // off the wire, still in its transfer encoding, so that it agrees with the
   // Content-Encoding recorded beside it. Asking net to skip decoding gives us
@@ -776,10 +781,11 @@ void URLLoader::ScheduleStart() {
         base::BindOnce(&URLLoader::ResumeStart, base::Unretained(this)));
     resource_scheduler_request_handle_->WillStartRequest(&defer);
   }
-  if (defer)
+  if (defer) {
     url_request_->LogBlockedBy("ResourceScheduler");
-  else
+  } else {
     url_request_->Start();
+  }
 }
 
 URLLoader::~URLLoader() {
@@ -1170,7 +1176,6 @@ void URLLoader::OnSSLCertificateError(net::URLRequest* request,
       base::BindOnce(&URLLoader::OnSSLCertificateErrorResponse,
                      weak_ptr_factory_.GetWeakPtr(), ssl_info));
 }
-
 
 void URLLoader::OnResponseStarted(net::URLRequest* url_request, int net_error) {
   DCHECK(url_request == url_request_.get());
@@ -1744,8 +1749,9 @@ void URLLoader::DidRead(int num_bytes,
     if (pending_write_) {
       // Limit sniffing to the first net::kMaxBytesToSniff.
       size_t data_length = pending_write_buffer_offset_;
-      if (data_length > net::kMaxBytesToSniff)
+      if (data_length > net::kMaxBytesToSniff) {
         data_length = net::kMaxBytesToSniff;
+      }
 
       std::string_view data(pending_write_->buffer(), data_length);
       bool stop_sniffing_after_processing_current_data =
@@ -1764,8 +1770,9 @@ void URLLoader::DidRead(int num_bytes,
         response_->mime_type.assign(new_type);
         response_->did_mime_sniff = true;
 
-        if (stop_sniffing_after_processing_current_data)
+        if (stop_sniffing_after_processing_current_data) {
           is_more_mime_sniffing_needed_ = false;
+        }
       }
 
       if (is_more_orb_sniffing_needed_) {
@@ -1774,8 +1781,9 @@ void URLLoader::DidRead(int num_bytes,
 
         // `has_new_data_to_sniff` can be false at the end-of-stream.
         bool has_new_data_to_sniff = new_data_offset < data.length();
-        if (has_new_data_to_sniff)
+        if (has_new_data_to_sniff) {
           orb_decision = orb_analyzer_->Sniff(data);
+        }
 
         if (orb_decision == orb::ResponseAnalyzer::Decision::kSniffMore &&
             stop_sniffing_after_processing_current_data) {
@@ -1976,8 +1984,9 @@ bool URLLoader::AllowFullCookies(
 URLLoader* URLLoader::ForRequest(const net::URLRequest& request) {
   auto* pointer =
       static_cast<UnownedPointer*>(request.GetUserData(kUserDataKey));
-  if (!pointer)
+  if (!pointer) {
     return nullptr;
+  }
   return pointer->get();
 }
 
@@ -2083,8 +2092,9 @@ void URLLoader::NotifyCompleted(int error_code) {
   }
 
   if (url_loader_client_.Get()) {
-    if (consumer_handle_.is_valid())
+    if (consumer_handle_.is_valid()) {
       SendResponseToClient();
+    }
 
     URLLoaderCompletionStatus status;
     status.error_code = error_code;
@@ -2409,8 +2419,9 @@ void URLLoader::SendUploadProgress(const net::UploadProgress& progress) {
 }
 
 void URLLoader::OnUploadProgressACK() {
-  if (upload_progress_tracker_)
+  if (upload_progress_tracker_) {
     upload_progress_tracker_->OnAckReceived();
+  }
 }
 
 void URLLoader::OnSSLCertificateErrorResponse(const net::SSLInfo& ssl_info,
@@ -2796,7 +2807,13 @@ void URLLoader::StartNextWarcExchange() {
   if (warc_recorder_) {
     warc_recorder_->Finish();
   }
-  warc_recorder_ = warc_recorder_factory_.Run();
+  warc_recorder_ = warc_recorder_factory_.Run(WarcBrowsingContext());
+}
+
+std::string URLLoader::WarcBrowsingContext() const {
+  const std::optional<url::Origin>& top_frame_origin =
+      url_request_->isolation_info().top_frame_origin();
+  return top_frame_origin ? top_frame_origin->Serialize() : std::string();
 }
 
 void URLLoader::PerformSyntheticResponseFallback() {
