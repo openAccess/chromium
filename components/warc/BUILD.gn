@@ -4,6 +4,8 @@
 
 static_library("warc") {
   sources = [
+    "gzip_member_writer.cc",
+    "gzip_member_writer.h",
     "warc_record.cc",
     "warc_record.h",
     "warc_writer.cc",
@@ -14,6 +16,7 @@ static_library("warc") {
     "//base",
     "//components/base32",
     "//crypto",
+    "//third_party/zlib",
     "//third_party/zlib/google:compression_utils",
   ]
 }
@@ -31,6 +34,7 @@ source_set("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "gzip_member_writer_unittest.cc",
     "warc_record_unittest.cc",
     "warc_writer_unittest.cc",
   ]
