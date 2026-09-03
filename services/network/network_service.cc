@@ -1353,7 +1353,8 @@ void NetworkService::GetVrpFlags(GetVrpFlagsCallback callback) {
 void NetworkService::StartWarcRecording(base::File file,
                                         const std::string& filename,
                                         bool compress_records,
-                                        base::File spill_file) {
+                                        base::File spill_file,
+                                        bool redact_credentials) {
   if (!file.IsValid()) {
     LOG(ERROR) << "WARC recording not started: file is not open for writing.";
     return;
@@ -1376,7 +1377,14 @@ void NetworkService::StartWarcRecording(base::File file,
   warc_recorder_ = std::make_unique<WarcRecorder>(
       std::move(file), WarcRecorder::Limits(),
       compress_records ? warc::WarcWriter::Compression::kGzipPerRecord
-                       : warc::WarcWriter::Compression::kNone);
+                       : warc::WarcWriter::Compression::kNone,
+      redact_credentials);
+  if (!redact_credentials) {
+    LOG(WARNING) << "WARC recording: cookie and authorization values are being "
+                    "archived. The file will contain working credentials for "
+                    "every site visited while it is recording.";
+  }
+
   if (spill_file.IsValid()) {
     warc_recorder_->SetSpillFile(std::move(spill_file));
   } else {

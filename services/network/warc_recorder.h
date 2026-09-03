@@ -59,7 +59,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   // describing nothing.
   WarcExchangeRecorder(base::WeakPtr<warc::WarcWriter> writer,
                        size_t max_body_bytes,
-                       base::RepeatingCallback<std::string()> warcinfo_id);
+                       base::RepeatingCallback<std::string()> warcinfo_id,
+                       bool redact_credentials);
 
   WarcExchangeRecorder(const WarcExchangeRecorder&) = delete;
   WarcExchangeRecorder& operator=(const WarcExchangeRecorder&) = delete;
@@ -150,6 +151,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   const size_t max_body_bytes_;
   const base::RepeatingCallback<std::string()> warcinfo_id_;
 
+  // Whether cookies and authorization headers keep their values. Off by
+  // default: recording is reachable from chrome://flags, and a stray archive
+  // should not be a working credential.
+  const bool redact_credentials_;
+
   GURL target_url_;
   base::Time date_;
   std::string protocol_;
@@ -204,9 +210,14 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // and cannot open arbitrary paths, so the browser process opens it and passes
   // the handle across. `compression` selects the on-disk framing; see
   // warc::WarcWriter::Compression.
+  // `redact_credentials` strips the values of cookie and authorization fields
+  // from every record, which is the default; the archive says so in its
+  // warcinfo, since the block digests then describe the redacted text rather
+  // than what crossed the wire.
   WarcRecorder(base::File file,
                const Limits& limits,
-               warc::WarcWriter::Compression compression);
+               warc::WarcWriter::Compression compression,
+               bool redact_credentials);
 
   WarcRecorder(const WarcRecorder&) = delete;
   WarcRecorder& operator=(const WarcRecorder&) = delete;
@@ -248,6 +259,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
  private:
   std::unique_ptr<warc::WarcWriter> writer_;
   const Limits limits_;
+  const bool redact_credentials_;
 
   // Name recorded in the file-level warcinfo record, repeated as `isPartOf` in
   // each context's own warcinfo.

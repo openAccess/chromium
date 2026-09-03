@@ -175,7 +175,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   void StartWarcRecording(base::File file,
                           const std::string& filename,
                           bool compress_records,
-                          base::File spill_file) override;
+                          base::File spill_file,
+                          bool redact_credentials) override;
   void CreateNetworkContext(
       mojo::PendingReceiver<mojom::NetworkContext> receiver,
       mojom::NetworkContextParamsPtr params) override;

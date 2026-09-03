@@ -47,6 +47,51 @@ bool StartsWithFieldName(std::string_view line, std::string_view name) {
          line[name.size()] == ':';
 }
 
+// Header fields whose values are credentials. An archive that hands its reader
+// the session it was captured with is a liability rather than a record, and
+// none of these are needed to understand what was served.
+constexpr std::string_view kCredentialHeaders[] = {
+    "cookie", "set-cookie", "authorization", "proxy-authorization"};
+
+constexpr std::string_view kRedactionMarker = "[redacted]";
+
+// Replaces the value of every credential-bearing field in an HTTP/1.1 header
+// block. The field name is kept, in the casing it was sent with, so the record
+// still shows that one was present and a reader can tell a redacted request
+// from a request that carried no cookie at all. The first line -- the request
+// or status line -- is never a header and is left alone.
+std::string RedactCredentialHeaders(std::string_view head) {
+  std::string out;
+  out.reserve(head.size());
+
+  bool first_line = true;
+  for (std::string_view line : base::SplitStringPiece(
+           head, kCrlf, base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    if (first_line) {
+      first_line = false;
+      base::StrAppend(&out, {line, kCrlf});
+      continue;
+    }
+
+    std::string_view name;
+    for (std::string_view candidate : kCredentialHeaders) {
+      if (StartsWithFieldName(line, candidate)) {
+        name = line.substr(0, candidate.size());
+        break;
+      }
+    }
+    if (name.empty()) {
+      base::StrAppend(&out, {line, kCrlf});
+    } else {
+      base::StrAppend(&out, {name, ": ", kRedactionMarker, kCrlf});
+    }
+  }
+
+  // Restore the blank line that terminates the header block.
+  out.append(kCrlf);
+  return out;
+}
+
 // Rewrites an HTTP/1.1 header block so it describes a payload that the network
 // stack already decoded: the transfer encoding is gone, so the headers claiming
 // it must go too, and the length must match what is actually stored.
@@ -113,10 +158,12 @@ std::string FindHeader(const net::HttpRawRequestHeaders& headers,
 WarcExchangeRecorder::WarcExchangeRecorder(
     base::WeakPtr<warc::WarcWriter> writer,
     size_t max_body_bytes,
-    base::RepeatingCallback<std::string()> warcinfo_id)
+    base::RepeatingCallback<std::string()> warcinfo_id,
+    bool redact_credentials)
     : writer_(std::move(writer)),
       max_body_bytes_(max_body_bytes),
       warcinfo_id_(std::move(warcinfo_id)),
+      redact_credentials_(redact_credentials),
       date_(base::Time::Now()) {}
 
 WarcExchangeRecorder::~WarcExchangeRecorder() {
@@ -172,7 +219,8 @@ void WarcExchangeRecorder::SetRequestHeaders(
   }
   block.append("\r\n");
 
-  request_block_ = std::move(block);
+  request_block_ =
+      redact_credentials_ ? RedactCredentialHeaders(block) : std::move(block);
   has_request_headers_ = true;
 }
 
@@ -187,6 +235,9 @@ void WarcExchangeRecorder::SetResponseHeaders(
   // the result is a reconstruction, since no such block was ever transmitted.
   response_head_ =
       net::HttpUtil::ConvertHeadersBackToHTTPResponse(headers->raw_headers());
+  if (redact_credentials_) {
+    response_head_ = RedactCredentialHeaders(response_head_);
+  }
   has_response_headers_ = true;
 }
 
@@ -387,11 +438,13 @@ void WarcExchangeRecorder::EmitSpilledResponseRecord(
 
 WarcRecorder::WarcRecorder(base::File file,
                            const Limits& limits,
-                           warc::WarcWriter::Compression compression)
+                           warc::WarcWriter::Compression compression,
+                           bool redact_credentials)
     : writer_(std::make_unique<warc::WarcWriter>(std::move(file),
                                                  limits.max_queued_bytes,
                                                  compression)),
       limits_(limits),
+      redact_credentials_(redact_credentials),
       writer_weak_factory_(writer_.get()) {}
 
 WarcRecorder::~WarcRecorder() {
@@ -409,14 +462,14 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder(
     const std::string& browsing_context) {
   return std::make_unique<WarcExchangeRecorder>(
       writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
-      WarcinfoResolver(browsing_context));
+      WarcinfoResolver(browsing_context), redact_credentials_);
 }
 
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder(
     const std::string& browsing_context) {
   auto recorder = std::make_unique<WarcExchangeRecorder>(
       writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
-      WarcinfoResolver(browsing_context));
+      WarcinfoResolver(browsing_context), redact_credentials_);
   recorder->EnableBodySpilling(
       // A WeakPtr cannot bind to a method that returns a value, and an
       // exchange recorder may outlive the session recorder.
@@ -467,11 +520,17 @@ void WarcRecorder::WriteWarcinfo(const std::string& filename) {
   header.filename = filename;
   header.record_id = warc::GenerateRecordId();
 
-  const std::vector<uint8_t> block = warc::BuildWarcinfoBlock({
+  std::vector<std::pair<std::string, std::string>> fields = {
       {"software", "Chromium"},
       {"format", "WARC File Format 1.1"},
       {"conformsTo", kConformsTo},
-  });
+  };
+  if (redact_credentials_) {
+    fields.emplace_back("redacted",
+                        "cookie, set-cookie, authorization, "
+                        "proxy-authorization");
+  }
+  const std::vector<uint8_t> block = warc::BuildWarcinfoBlock(fields);
 
   writer_->AddRecord(warc::SerializeRecord(header, block, block.size(),
                                            warc::DigestAlgorithm::kSha1));
@@ -513,6 +572,11 @@ const std::string& WarcRecorder::WarcinfoIdForContext(
   };
   if (!filename_.empty()) {
     fields.emplace_back("isPartOf", filename_);
+  }
+  if (redact_credentials_) {
+    fields.emplace_back("redacted",
+                        "cookie, set-cookie, authorization, "
+                        "proxy-authorization");
   }
   if (browsing_context.empty()) {
     fields.emplace_back(

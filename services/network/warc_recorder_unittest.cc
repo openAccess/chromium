@@ -111,10 +111,12 @@ class WarcRecorderTest : public testing::Test {
   std::unique_ptr<WarcRecorder> MakeRecorder(
       const WarcRecorder::Limits& limits = WarcRecorder::Limits(),
       warc::WarcWriter::Compression compression =
-          warc::WarcWriter::Compression::kNone) {
+          warc::WarcWriter::Compression::kNone,
+      bool redact_credentials = true) {
     base::File file(ArchivePath(),
                     base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
-    return std::make_unique<WarcRecorder>(std::move(file), limits, compression);
+    return std::make_unique<WarcRecorder>(std::move(file), limits, compression,
+                                          redact_credentials);
   }
 
   // Tears the recorder down so everything is flushed, then returns the archive.
@@ -677,6 +679,112 @@ TEST_F(WarcRecorderTest, TrafficNoPageIsResponsibleForIsSeparated) {
   ASSERT_TRUE(update);
   EXPECT_EQ(browser_info->Field("WARC-Record-ID"),
             update->Field("WARC-Warcinfo-ID"));
+}
+
+// Records an exchange carrying the credentials a real session would.
+void RecordCredentialedExchange(WarcRecorder& recorder) {
+  auto exchange = recorder.CreateExchangeRecorder("https://example.org");
+  exchange->SetTargetUrl(GURL("https://example.org/"));
+
+  net::HttpRawRequestHeaders headers;
+  headers.set_request_line("GET / HTTP/1.1\r\n");
+  headers.Add("Host", "example.org");
+  headers.Add("Cookie", "session=super-secret-value; other=abc");
+  headers.Add("Authorization", "Bearer super-secret-token");
+  headers.Add("Accept", "text/html");
+  exchange->SetRequestHeaders(headers, "GET");
+
+  exchange->SetResponseHeaders(MakeResponseHeaders(
+      "HTTP/1.1 200 OK\n"
+      "Content-Type: text/html\n"
+      "Set-Cookie: session=another-secret-value; Path=/\n\n"));
+  exchange->Finish();
+}
+
+TEST_F(WarcRecorderTest, CredentialsAreRedactedByDefault) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  RecordCredentialedExchange(*recorder);
+
+  const std::string archive = FinishAndRead(std::move(recorder));
+
+  // The values are gone, wherever they appeared.
+  EXPECT_EQ(archive.find("super-secret-value"), std::string::npos);
+  EXPECT_EQ(archive.find("super-secret-token"), std::string::npos);
+  EXPECT_EQ(archive.find("another-secret-value"), std::string::npos);
+
+  // But the fields remain, so a reader can tell a redacted request from one
+  // that carried no cookie at all.
+  EXPECT_NE(archive.find("Cookie: [redacted]"), std::string::npos);
+  EXPECT_NE(archive.find("Authorization: [redacted]"), std::string::npos);
+  EXPECT_NE(archive.find("Set-Cookie: [redacted]"), std::string::npos);
+
+  // Everything else is untouched.
+  EXPECT_NE(archive.find("Host: example.org"), std::string::npos);
+  EXPECT_NE(archive.find("Accept: text/html"), std::string::npos);
+  EXPECT_NE(archive.find("Content-Type: text/html"), std::string::npos);
+  EXPECT_NE(archive.find("GET / HTTP/1.1"), std::string::npos);
+  EXPECT_NE(archive.find("HTTP/1.1 200 OK"), std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, RedactionIsDeclaredInTheWarcinfo) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  RecordCredentialedExchange(*recorder);
+
+  const std::vector<ParsedRecord> records =
+      ParseRecords(FinishAndRead(std::move(recorder)));
+
+  // The block digests cover the redacted text, not what crossed the wire, so
+  // an archive that withholds something has to say so.
+  for (const char* needle :
+       {"software:", "browsing-context: https://example.org"}) {
+    const ParsedRecord* info = FindRecord(records, "warcinfo", needle);
+    ASSERT_TRUE(info) << needle;
+    EXPECT_NE(info->block.find("redacted: cookie, set-cookie, authorization"),
+              std::string::npos)
+        << "warcinfo does not disclose the redaction: " << info->block;
+  }
+}
+
+TEST_F(WarcRecorderTest, CredentialsAreKeptWhenExplicitlyRequested) {
+  auto recorder =
+      MakeRecorder(WarcRecorder::Limits(), warc::WarcWriter::Compression::kNone,
+                   /*redact_credentials=*/false);
+  recorder->WriteWarcinfo("out.warc");
+  RecordCredentialedExchange(*recorder);
+
+  const std::string archive = FinishAndRead(std::move(recorder));
+
+  // Reproducing an exchange exactly is a legitimate need; it just cannot be
+  // the default.
+  EXPECT_NE(archive.find("super-secret-value"), std::string::npos);
+  EXPECT_NE(archive.find("super-secret-token"), std::string::npos);
+  EXPECT_NE(archive.find("another-secret-value"), std::string::npos);
+  EXPECT_EQ(archive.find("[redacted]"), std::string::npos);
+  // And nothing claims a redaction that did not happen.
+  EXPECT_EQ(archive.find("redacted:"), std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, RedactionLeavesContentLengthAndDigestsConsistent) {
+  auto recorder = MakeRecorder();
+  RecordCredentialedExchange(*recorder);
+
+  const std::vector<ParsedRecord> records =
+      ParseRecords(FinishAndRead(std::move(recorder)));
+
+  // ParseRecords walks the file by Content-Length, so it only yields records
+  // whose declared length matches what was written -- shortening a header
+  // without restating the length would desynchronise every record after it.
+  const ParsedRecord* request = FindRecord(records, "request");
+  const ParsedRecord* response = FindRecord(records, "response");
+  ASSERT_TRUE(request);
+  ASSERT_TRUE(response);
+  EXPECT_EQ(request->block.size(),
+            static_cast<size_t>(std::stoi(request->Field("Content-Length"))));
+  EXPECT_EQ(warc::ComputeDigest(base::as_byte_span(response->block),
+                                warc::DigestAlgorithm::kSha1),
+            response->Field("WARC-Block-Digest"));
 }
 
 }  // namespace

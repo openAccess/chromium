@@ -242,8 +242,13 @@ interface NetworkService {
   // Both files must already be open: the network service is sandboxed and
   // cannot open arbitrary paths itself. |spill_file| must be readable as well
   // as writable, since the archive writer streams it back out.
+  // When |redact_credentials| is true, which is the default, cookie and
+  // authorization field values are replaced in every record. The archive
+  // declares this in its warcinfo, because the block digests then cover the
+  // redacted text rather than what crossed the wire.
   StartWarcRecording(mojo_base.mojom.File file, string filename,
-                     bool compress_records, mojo_base.mojom.File? spill_file);
+                     bool compress_records, mojo_base.mojom.File? spill_file,
+                     bool redact_credentials);
 
   // Creates a new network context with the given parameters.
   // This method is not used on Desktop (excluding Android Desktop) when the

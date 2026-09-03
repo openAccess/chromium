@@ -1058,7 +1058,8 @@ class URLLoaderTest : public testing::Test {
     auto recorder = std::make_unique<WarcRecorder>(
         base::File(path,
                    base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE),
-        WarcRecorder::Limits(), warc::WarcWriter::Compression::kNone);
+        WarcRecorder::Limits(), warc::WarcWriter::Compression::kNone,
+        /*redact_credentials=*/true);
     warc_recorder_factory_ = base::BindLambdaForTesting(
         [raw = recorder.get()](const std::string& browsing_context)
             -> std::unique_ptr<WarcExchangeRecorder> {

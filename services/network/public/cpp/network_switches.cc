@@ -84,6 +84,15 @@ const char kSSLKeyLogFile[] = "ssl-key-log-file";
 // without reading the records before it.
 const char kWarcOutput[] = "warc-output";
 
+// Keeps cookie and authorization values in a WARC archive instead of redacting
+// them, which is the default. The archive then contains live session
+// credentials for every site visited while it was recording -- an anonymous
+// capture of a news site already carries hundreds of cookies and a bearer
+// token -- so it becomes as sensitive as the accounts it touched. Only useful
+// where the exchange must be reproduced exactly and the file is handled
+// accordingly.
+const char kWarcIncludeCredentials[] = "warc-include-credentials";
+
 const char kTestThirdPartyCookiePhaseout[] = "test-third-party-cookie-phaseout";
 
 // Treat given (insecure) origins as secure origins. Multiple origins can be

@@ -804,7 +804,9 @@ network::mojom::NetworkService* GetNetworkService() {
             }
             g_observed_network_service->remote()->StartWarcRecording(
                 std::move(file), warc_path.BaseName().AsUTF8Unsafe(),
-                compress_records, std::move(spill));
+                compress_records, std::move(spill),
+                !command_line->HasSwitch(
+                    network::switches::kWarcIncludeCredentials));
           }
         }
       }

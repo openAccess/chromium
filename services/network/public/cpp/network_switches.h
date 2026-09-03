@@ -35,6 +35,8 @@ extern const char kSSLKeyLogFile[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kWarcOutput[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+extern const char kWarcIncludeCredentials[];
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kTestThirdPartyCookiePhaseout[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kUnsafelyTreatInsecureOriginAsSecure[];

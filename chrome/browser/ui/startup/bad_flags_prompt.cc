@@ -86,6 +86,8 @@ const char* const kBadFlags[] = {
     network::switches::kNetLogCaptureMode,
     // Writes every request and response, bodies included, to a file.
     network::switches::kWarcOutput,
+    // Puts working session credentials into that archive.
+    network::switches::kWarcIncludeCredentials,
 
     // These flags disable sandbox-related security.
     sandbox::policy::switches::kDisableGpuSandbox,
