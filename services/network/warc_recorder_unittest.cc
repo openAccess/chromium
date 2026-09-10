@@ -14,6 +14,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/callback_helpers.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -823,7 +824,7 @@ TEST_F(WarcRecorderTest, RotationSendsLaterRecordsToTheNewFile) {
   const base::FilePath second = PathNamed("second.warc");
 
   RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
-  recorder->Rotate(OpenAt(second), "second.warc");
+  recorder->Rotate(OpenAt(second), "second.warc", base::DoNothing());
   RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
   Finish(std::move(recorder));
 
@@ -842,7 +843,7 @@ TEST_F(WarcRecorderTest, EachFileGetsItsOwnFileLevelWarcinfo) {
   const base::FilePath second = PathNamed("second.warc");
 
   RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
-  recorder->Rotate(OpenAt(second), "second.warc");
+  recorder->Rotate(OpenAt(second), "second.warc", base::DoNothing());
   RecordExchange(*recorder, "https://a.example", GURL("https://a.example/2"));
   Finish(std::move(recorder));
 
@@ -869,7 +870,7 @@ TEST_F(WarcRecorderTest, ContextWarcinfoIsReMintedAfterRotation) {
   // minted ids are carried across: the records in the new file would cite a
   // warcinfo that stayed behind in the old one.
   RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
-  recorder->Rotate(OpenAt(second), "second.warc");
+  recorder->Rotate(OpenAt(second), "second.warc", base::DoNothing());
   RecordExchange(*recorder, "https://a.example", GURL("https://a.example/2"));
   Finish(std::move(recorder));
 
@@ -912,7 +913,7 @@ TEST_F(WarcRecorderTest, ContextThatGoesQuietCostsTheNewFileNoWarcinfo) {
   const base::FilePath second = PathNamed("second.warc");
 
   RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
-  recorder->Rotate(OpenAt(second), "second.warc");
+  recorder->Rotate(OpenAt(second), "second.warc", base::DoNothing());
   RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
   Finish(std::move(recorder));
 
@@ -937,7 +938,7 @@ TEST_F(WarcRecorderTest, RotationDoesNotSplitAnExchange) {
   exchange->SetRequestHeaders(headers, "GET");
   exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
 
-  recorder->Rotate(OpenAt(second), "second.warc");
+  recorder->Rotate(OpenAt(second), "second.warc", base::DoNothing());
 
   // The pair is handed over as one act, so it lands wholly in the file that is
   // current when the exchange completes rather than half in each.
@@ -964,7 +965,13 @@ TEST_F(WarcRecorderTest, RotatingToNoFileStopsRecording) {
   recorder->WriteWarcinfo("out.warc");
 
   RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
-  recorder->Rotate(base::File(), std::string());
+
+  // Stopping still reports the file it closed, or a caller waiting to package
+  // the last segment of a session would wait forever.
+  base::test::TestFuture<void> stopped;
+  recorder->Rotate(base::File(), std::string(), stopped.GetCallback());
+  ASSERT_TRUE(stopped.Wait());
+
   RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
   Finish(std::move(recorder));
 
@@ -972,6 +979,28 @@ TEST_F(WarcRecorderTest, RotatingToNoFileStopsRecording) {
   EXPECT_NE(old_file.find("https://a.example/1"), std::string::npos);
   // Nowhere to write it, and nothing appended to the file just closed.
   EXPECT_EQ(old_file.find("https://b.example/1"), std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, RotationReportsTheOutgoingFileComplete) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+
+  base::test::TestFuture<void> rotated;
+  recorder->Rotate(OpenAt(second), "second.warc", rotated.GetCallback());
+  ASSERT_TRUE(rotated.Wait());
+
+  // The reply is what tells a caller the segment may be indexed or packaged, so
+  // everything recorded before the rotation has to be on disk by the time it
+  // arrives -- with the recorder still alive and recording elsewhere, not torn
+  // down. Reading the file here is the whole assertion.
+  const std::string old_file = ReadAt(ArchivePath());
+  EXPECT_NE(old_file.find("WARC-Filename: out.warc"), std::string::npos);
+  EXPECT_NE(old_file.find("https://a.example/1"), std::string::npos);
+
+  Finish(std::move(recorder));
 }
 
 }  // namespace

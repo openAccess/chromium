@@ -115,8 +115,13 @@ class WarcWriter {
   size_t queued_bytes() const;
 
   // Runs `callback` on the caller's sequence once every record queued before
-  // this call has reached the file. For tests and for flushing at shutdown.
-  void FlushForTesting(base::OnceClosure callback);
+  // this call has reached the file and the file has been flushed to disk.
+  //
+  // Queued behind a Rotate(), this is what makes "the file just closed is
+  // complete" observable: the rotation drains first, so by the time `callback`
+  // runs the outgoing file has been written, flushed and closed, and whatever
+  // indexes or packages that segment may begin reading it.
+  void Flush(base::OnceClosure callback);
 
  private:
   struct QueuedRecord;

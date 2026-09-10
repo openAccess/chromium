@@ -463,7 +463,7 @@ size_t WarcWriter::queued_bytes() const {
   return queue_->queued_bytes();
 }
 
-void WarcWriter::FlushForTesting(base::OnceClosure callback) {
+void WarcWriter::Flush(base::OnceClosure callback) {
   file_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&FileWriter::Flush,
                                 base::Unretained(file_writer_.get()), queue_));

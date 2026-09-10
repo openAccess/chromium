@@ -536,7 +536,9 @@ void WarcRecorder::WriteWarcinfo(const std::string& filename) {
                                            warc::DigestAlgorithm::kSha1));
 }
 
-void WarcRecorder::Rotate(base::File file, const std::string& filename) {
+void WarcRecorder::Rotate(base::File file,
+                          const std::string& filename,
+                          base::OnceClosure on_previous_file_complete) {
   const bool recording_continues = file.IsValid();
 
   // Handed over before anything below it, so every record that follows lands in
@@ -553,11 +555,17 @@ void WarcRecorder::Rotate(base::File file, const std::string& filename) {
   // rotation costs the new file nothing.
   context_warcinfo_ids_.clear();
 
-  if (!recording_continues) {
+  if (recording_continues) {
+    WriteWarcinfo(filename);
+  } else {
     filename_.clear();
-    return;
   }
-  WriteWarcinfo(filename);
+
+  // Queued behind the rotation, so it reports the outgoing file complete rather
+  // than merely handed over. A caller that packages a finished segment cannot
+  // act on anything weaker: the records are still draining onto disk when
+  // Rotate() returns.
+  writer_->Flush(std::move(on_previous_file_complete));
 }
 
 base::RepeatingCallback<std::string()> WarcRecorder::WarcinfoResolver(

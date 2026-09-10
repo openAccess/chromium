@@ -17,6 +17,7 @@
 #include "base/component_export.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -266,7 +267,14 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // A rotation never splits an exchange. A request and its response are handed
   // to the writer together as one act, and a rotation takes its place in the
   // same queue, so a concurrent pair cannot end up straddling two files.
-  void Rotate(base::File file, const std::string& filename);
+  //
+  // `on_previous_file_complete` runs once the file being closed has been
+  // written, flushed and closed -- not merely handed over. Until then the
+  // segment is still being drained onto disk, so anything that reads it, such
+  // as an index or a container built from it, has to wait for this.
+  void Rotate(base::File file,
+              const std::string& filename,
+              base::OnceClosure on_previous_file_complete);
 
   warc::WarcWriter& writer_for_testing() { return *writer_; }
 

@@ -45,7 +45,7 @@ class WarcWriterTest : public testing::Test {
   // file's contents.
   std::string ReadArchiveAfterFlush(WarcWriter& writer) {
     base::test::TestFuture<void> flushed;
-    writer.FlushForTesting(flushed.GetCallback());
+    writer.Flush(flushed.GetCallback());
     EXPECT_TRUE(flushed.Wait());
 
     std::string contents;
@@ -72,7 +72,7 @@ class WarcWriterTest : public testing::Test {
   // current by then.
   void FlushAll(WarcWriter& writer) {
     base::test::TestFuture<void> flushed;
-    writer.FlushForTesting(flushed.GetCallback());
+    writer.Flush(flushed.GetCallback());
     EXPECT_TRUE(flushed.Wait());
   }
 

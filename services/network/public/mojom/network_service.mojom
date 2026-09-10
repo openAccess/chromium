@@ -250,6 +250,34 @@ interface NetworkService {
                      bool compress_records, mojo_base.mojom.File? spill_file,
                      bool redact_credentials);
 
+  // Closes the WARC archive being recorded and continues into |file|, which the
+  // browser opens because the network service is sandboxed and cannot open a
+  // path itself -- the same reason StartWarcRecording is given an open file.
+  // |filename| is recorded in the new file's own warcinfo, so each segment
+  // names itself however it is later moved or renamed.
+  //
+  // Rotation is what turns a session into a series of bounded archives instead
+  // of one file that grows for as long as the browser runs. It never splits an
+  // exchange: a request and its response are written as one act, so a
+  // concurrent pair always lands wholly in one file.
+  //
+  // A null |file| stops recording instead. Requests handled afterwards are not
+  // archived, and no warcinfo is written since nothing would receive it. A
+  // later call with a valid file resumes into a fresh archive.
+  //
+  // The reply is sent once the outgoing file has been written, flushed and
+  // closed -- not when the rotation is accepted. Anything that reads a finished
+  // segment, such as an index or a WACZ built from it, has to wait for this,
+  // and a rotation is the only point at which a segment becomes final while the
+  // browser keeps running.
+  //
+  // The spill file given to StartWarcRecording is kept. It is scratch space for
+  // bodies too large to hold in memory and never forms part of an archive, so
+  // it does not rotate with one.
+  //
+  // Replies without doing anything if no recording is in progress.
+  RotateWarcOutput(mojo_base.mojom.File? file, string filename) => ();
+
   // Creates a new network context with the given parameters.
   // This method is not used on Desktop (excluding Android Desktop) when the
   // CreateNetworkContextNonBlocking feature is enabled. In those environments,

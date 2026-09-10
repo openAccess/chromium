@@ -177,6 +177,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
                           bool compress_records,
                           base::File spill_file,
                           bool redact_credentials) override;
+  void RotateWarcOutput(base::File file,
+                        const std::string& filename,
+                        RotateWarcOutputCallback callback) override;
   void CreateNetworkContext(
       mojo::PendingReceiver<mojom::NetworkContext> receiver,
       mojom::NetworkContextParamsPtr params) override;

@@ -1397,6 +1397,27 @@ void NetworkService::StartWarcRecording(base::File file,
   warc_recorder_->WriteWarcinfo(filename);
 }
 
+void NetworkService::RotateWarcOutput(base::File file,
+                                      const std::string& filename,
+                                      RotateWarcOutputCallback callback) {
+  if (!warc_recorder_) {
+    // Nothing is recording, so there is no archive to close and nothing to
+    // report about one.
+    std::move(callback).Run();
+    return;
+  }
+
+  if (!file.IsValid()) {
+    LOG(WARNING) << "WARC recording stopped: rotated to no file. Requests "
+                    "handled from now on will not be archived.";
+  }
+
+  // The recorder replies for us, once the file being closed is actually on
+  // disk. Replying any earlier would invite a caller to read a segment that is
+  // still draining.
+  warc_recorder_->Rotate(std::move(file), filename, std::move(callback));
+}
+
 std::unique_ptr<DevtoolsDurableMessageWriter>
 NetworkService::MaybeCreateDurableMessageWriter(
     const base::UnguessableToken& throttling_profile_id,
