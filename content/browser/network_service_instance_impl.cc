@@ -30,6 +30,7 @@
 #include "base/sequence_checker.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock_metrics_recorder.h"
 #include "base/synchronization/waitable_event.h"
@@ -607,6 +608,100 @@ net::NetLogFileFormat GetNetLogFileFormatFromCommandLineForTesting(  // IN-TEST
   return GetNetLogFileFormatFromCommandLine(command_line);
 }
 
+// The 14-digit UTC timestamp naming a capture, as web archive tooling spells a
+// time. Fixed when recording starts, so every file of one session carries the
+// same one and a later session writes a set of its own rather than over the
+// top of this one.
+std::string WarcCaptureTimestamp() {
+  base::Time::Exploded now;
+  base::Time::Now().UTCExplode(&now);
+  return base::StringPrintf("%04d%02d%02d%02d%02d%02d", now.year, now.month,
+                            now.day_of_month, now.hour, now.minute, now.second);
+}
+
+// "chrdl.warc.gz" becomes "chrdl-20260910171510-00000.warc.gz" and so on: the
+// prefix asked for, the capture's timestamp, then the segment's serial. That is
+// the shape web archives are conventionally named in, and it sorts by name into
+// the order it was written -- the timestamp groups a session, the serial orders
+// it within one.
+//
+// The serial goes before the whole extension rather than the last one, so a
+// gzipped archive keeps the ".warc.gz" that tells tooling what it is.
+base::FilePath SerialWarcPath(const base::FilePath& base_path,
+                              const std::string& timestamp,
+                              int serial) {
+  const std::string name = base_path.BaseName().AsUTF8Unsafe();
+  const size_t dot = name.find('.');
+  const std::string stem = name.substr(0, dot);
+  const std::string extensions =
+      dot == std::string::npos ? std::string() : name.substr(dot);
+  return base_path.DirName().AppendASCII(
+      base::StringPrintf("%s-%s-%05d%s", stem.c_str(), timestamp.c_str(),
+                         serial, extensions.c_str()));
+}
+
+// Opens the files a rotating WARC capture continues into.
+//
+// The network service decides when to rotate, being the only side that knows
+// how large the file has grown, but it is sandboxed and cannot open a path. So
+// what the files are called and where they go is decided here, beside the code
+// that opened the first one.
+class WarcOutputProviderImpl : public network::mojom::WarcOutputProvider {
+ public:
+  // `first_serial` is the serial after the one already open, since the browser
+  // opens the first file itself before recording starts.
+  WarcOutputProviderImpl(base::FilePath base_path,
+                         std::string timestamp,
+                         int first_serial)
+      : base_path_(std::move(base_path)),
+        timestamp_(std::move(timestamp)),
+        next_serial_(first_serial) {}
+
+  WarcOutputProviderImpl(const WarcOutputProviderImpl&) = delete;
+  WarcOutputProviderImpl& operator=(const WarcOutputProviderImpl&) = delete;
+
+  ~WarcOutputProviderImpl() override = default;
+
+  void ProvideNextFile(ProvideNextFileCallback callback) override {
+    const base::FilePath path =
+        SerialWarcPath(base_path_, timestamp_, next_serial_++);
+
+    // Unlike the first file, this is opened while the browser is running rather
+    // than during startup, so it does not get to block this sequence. The
+    // service goes on recording into the current file until the reply arrives.
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE,
+        {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+        base::BindOnce(
+            [](const base::FilePath& path) {
+              return base::File(path, base::File::FLAG_CREATE_ALWAYS |
+                                          base::File::FLAG_WRITE);
+            },
+            path),
+        base::BindOnce(
+            [](const base::FilePath& path, ProvideNextFileCallback callback,
+               base::File file) {
+              if (!file.IsValid()) {
+                // Declining stops the capture, which is the honest answer:
+                // carrying on would mean growing the file the threshold exists
+                // to bound, and doing it silently.
+                LOG(ERROR) << "WARC rotation: failed opening " << path.value()
+                           << "; recording stops here.";
+                std::move(callback).Run(base::File(), std::string());
+                return;
+              }
+              std::move(callback).Run(std::move(file),
+                                      path.BaseName().AsUTF8Unsafe());
+            },
+            path, std::move(callback)));
+  }
+
+ private:
+  const base::FilePath base_path_;
+  const std::string timestamp_;
+  int next_serial_;
+};
+
 class NetworkServiceInstancePrivate {
  public:
   // Opens the specified file, blocking until the file is open. Used to open
@@ -775,15 +870,39 @@ network::mojom::NetworkService* GetNetworkService() {
         if (warc_path.empty()) {
           LOG(ERROR) << "warc-output argument missing a path";
         } else {
+          uint64_t max_file_bytes = 0;
+          if (command_line->HasSwitch(network::switches::kWarcMaxFileSize) &&
+              !base::StringToUint64(command_line->GetSwitchValueASCII(
+                                        network::switches::kWarcMaxFileSize),
+                                    &max_file_bytes)) {
+            LOG(ERROR) << "Ignoring --warc-max-file-size: "
+                       << command_line->GetSwitchValueASCII(
+                              network::switches::kWarcMaxFileSize)
+                       << " is not a number of bytes. Recording into a single "
+                          "file.";
+            max_file_bytes = 0;
+          }
+
+          // A capture that rotates is a set, and a member of a set is named for
+          // the set it belongs to and its place in it -- so the first file is
+          // numbered too, rather than the path given standing apart from the
+          // rest. A capture that does not rotate is one file and is written
+          // exactly where it was asked to be.
+          const std::string timestamp =
+              max_file_bytes > 0 ? WarcCaptureTimestamp() : std::string();
+          const base::FilePath first_path =
+              max_file_bytes > 0 ? SerialWarcPath(warc_path, timestamp, 0)
+                                 : warc_path;
+
           // The network service is sandboxed and cannot open an arbitrary path,
           // so open it here and hand the descriptor across, as the NetLog and
           // SSL key log do.
           base::File file = NetworkServiceInstancePrivate::BlockingOpenFile(
-              warc_path,
+              first_path,
               base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
           if (!file.IsValid()) {
             LOG(ERROR) << "Failed opening WARC output file: "
-                       << warc_path.value();
+                       << first_path.value();
           } else {
             // A ".gz" path selects gzip framing, the way wget and other
             // capture tools spell the same choice. The network service never
@@ -795,18 +914,31 @@ network::mojom::NetworkService* GetNetworkService() {
             // it is opened here beside the archive and deleted on close --
             // nothing in it outlives the capture.
             base::File spill = NetworkServiceInstancePrivate::BlockingOpenFile(
-                warc_path.AddExtensionASCII(".spill"),
+                first_path.AddExtensionASCII(".spill"),
                 base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_READ |
                     base::File::FLAG_WRITE | base::File::FLAG_DELETE_ON_CLOSE);
             if (!spill.IsValid()) {
               LOG(WARNING) << "Failed opening WARC spill file beside "
-                           << warc_path.value();
+                           << first_path.value();
             }
             g_observed_network_service->remote()->StartWarcRecording(
-                std::move(file), warc_path.BaseName().AsUTF8Unsafe(),
+                std::move(file), first_path.BaseName().AsUTF8Unsafe(),
                 compress_records, std::move(spill),
                 !command_line->HasSwitch(
                     network::switches::kWarcIncludeCredentials));
+
+            if (max_file_bytes > 0) {
+              // The receiver owns the provider and outlives this scope, since
+              // it is asked for a file once per rotation rather than once at
+              // startup. It goes away with the pipe.
+              mojo::PendingRemote<network::mojom::WarcOutputProvider> provider;
+              mojo::MakeSelfOwnedReceiver(
+                  std::make_unique<WarcOutputProviderImpl>(warc_path, timestamp,
+                                                           /*first_serial=*/1),
+                  provider.InitWithNewPipeAndPassReceiver());
+              g_observed_network_service->remote()->SetWarcRotationPolicy(
+                  std::move(provider), max_file_bytes);
+            }
           }
         }
       }

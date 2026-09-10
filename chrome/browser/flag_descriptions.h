@@ -5043,7 +5043,9 @@ inline constexpr char kWarcOutputDescription[] =
     "records everything the browser sends and receives -- including "
     "credentials, cookies and personal data -- treat the resulting file as "
     "sensitive. Applies to the whole browser, not one tab, and takes effect "
-    "after a restart.";
+    "after a restart. Pass --warc-max-file-size=<bytes> on the command line to "
+    "rotate into a timestamped, numbered series of files instead of one "
+    "growing file.";
 
 inline constexpr char kWallpaperFastRefreshName[] =
     "Enable shortened wallpaper daily refresh interval for manual testing";

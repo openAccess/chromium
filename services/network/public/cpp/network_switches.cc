@@ -93,6 +93,30 @@ const char kWarcOutput[] = "warc-output";
 // accordingly.
 const char kWarcIncludeCredentials[] = "warc-include-credentials";
 
+// Rotates the WARC output once the file being written passes this many bytes,
+// so a long session becomes a series of bounded archives rather than one file
+// that grows until the browser exits. Web archives are conventionally written
+// in files of around a gigabyte, which is the sort of value this expects.
+//
+// The threshold is soft: the size is checked between exchanges and a new file
+// has to be opened by the browser process, so a file passes the limit and keeps
+// growing until that is done. No record is ever split or delayed to make a file
+// land on the boundary -- an archive's worth is in being complete, not in being
+// a given size. Expect files somewhat over the number given, by roughly the
+// largest resource being archived when the boundary is reached.
+//
+// A rotating capture is a set, so its files are named for the set and their
+// place in it rather than the first one standing apart:
+// --warc-output=chrdl.warc.gz with this switch writes
+// chrdl-<YYYYMMDDHHMMSS>-00000.warc.gz, chrdl-<YYYYMMDDHHMMSS>-00001.warc.gz
+// and so on, sorting by name into the order they were written. The timestamp is
+// fixed when recording starts, so a later capture writes a set of its own
+// rather than over the top of this one.
+//
+// Ignored without --warc-output. Absent or zero, the session records into the
+// single file it was given, at exactly the path it was given.
+const char kWarcMaxFileSize[] = "warc-max-file-size";
+
 const char kTestThirdPartyCookiePhaseout[] = "test-third-party-cookie-phaseout";
 
 // Treat given (insecure) origins as secure origins. Multiple origins can be
