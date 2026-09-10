@@ -4,12 +4,16 @@
 
 static_library("warc") {
   sources = [
+    "gzip_member_reader.cc",
+    "gzip_member_reader.h",
     "gzip_member_writer.cc",
     "gzip_member_writer.h",
     "warc_body_spill.cc",
     "warc_body_spill.h",
     "warc_record.cc",
     "warc_record.h",
+    "warc_record_parser.cc",
+    "warc_record_parser.h",
     "warc_writer.cc",
     "warc_writer.h",
   ]
@@ -30,13 +34,18 @@ source_set("test_support") {
     "warc_test_util.h",
   ]
 
-  deps = [ "//third_party/zlib" ]
+  deps = [
+    ":warc",
+    "//base",
+  ]
 }
 
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "gzip_member_reader_unittest.cc",
     "gzip_member_writer_unittest.cc",
+    "warc_record_parser_unittest.cc",
     "warc_record_unittest.cc",
     "warc_writer_unittest.cc",
   ]

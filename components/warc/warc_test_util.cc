@@ -5,10 +5,12 @@
 #include "components/warc/warc_test_util.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <utility>
 
-#include "third_party/zlib/zlib.h"
+#include "base/containers/span.h"
+#include "components/warc/gzip_member_reader.h"
 
 namespace warc {
 
@@ -16,35 +18,17 @@ std::optional<std::vector<std::string>> InflateGzipMembers(
     std::string_view data) {
   std::vector<std::string> members;
 
-  while (!data.empty()) {
-    z_stream stream = {};
-    // 16 + MAX_WBITS asks for the gzip wrapper rather than zlib or raw deflate.
-    if (inflateInit2(&stream, 16 + MAX_WBITS) != Z_OK) {
+  base::span<const uint8_t> rest = base::as_byte_span(data);
+  while (!rest.empty()) {
+    size_t compressed_size = 0;
+    std::optional<std::vector<uint8_t>> member =
+        InflateGzipMember(rest, &compressed_size);
+    if (!member || compressed_size == 0) {
       return std::nullopt;
     }
-    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
-    stream.avail_in = static_cast<uInt>(data.size());
-
-    std::string member;
-    char buffer[4096];
-    int result = Z_OK;
-    while (result != Z_STREAM_END) {
-      stream.next_out = reinterpret_cast<Bytef*>(buffer);
-      stream.avail_out = sizeof(buffer);
-      result = inflate(&stream, Z_NO_FLUSH);
-      // Anything else — including the Z_BUF_ERROR that a truncated member ends
-      // on — means this is not a well-formed member.
-      if (result != Z_OK && result != Z_STREAM_END) {
-        inflateEnd(&stream);
-        return std::nullopt;
-      }
-      member.append(buffer, sizeof(buffer) - stream.avail_out);
-    }
-
+    members.emplace_back(member->begin(), member->end());
     // Whatever this member did not consume begins the next one.
-    data.remove_prefix(data.size() - stream.avail_in);
-    inflateEnd(&stream);
-    members.push_back(std::move(member));
+    rest = rest.subspan(compressed_size);
   }
 
   return members;
