@@ -53,6 +53,29 @@ class WarcWriterTest : public testing::Test {
     return contents;
   }
 
+  base::FilePath PathNamed(std::string_view name) {
+    return temp_dir_.GetPath().AppendASCII(name);
+  }
+
+  base::File OpenAt(const base::FilePath& path) {
+    return base::File(path,
+                      base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+  }
+
+  std::string ReadAt(const base::FilePath& path) {
+    std::string contents;
+    EXPECT_TRUE(base::ReadFileToString(path, &contents));
+    return contents;
+  }
+
+  // Blocks until everything queued so far has reached disk, whichever file is
+  // current by then.
+  void FlushAll(WarcWriter& writer) {
+    base::test::TestFuture<void> flushed;
+    writer.FlushForTesting(flushed.GetCallback());
+    EXPECT_TRUE(flushed.Wait());
+  }
+
   // A spill holding `contents`, as a completion would have filled it.
   std::unique_ptr<WarcBodySpill> MakeSpill(WarcWriter& writer,
                                            std::string_view contents) {
@@ -352,6 +375,131 @@ TEST_F(WarcWriterTest, SpilledRecordIsWrittenWholeAmongOthers) {
 
   EXPECT_EQ("before" + std::string("HEAD:") + body + "\r\n\r\n" + "after",
             ReadArchiveAfterFlush(writer));
+}
+
+TEST_F(WarcWriterTest, RotationSplitsRecordsBetweenFiles) {
+  const base::FilePath second = PathNamed("second.warc");
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/1024,
+                    WarcWriter::Compression::kNone);
+
+  EXPECT_TRUE(writer.AddRecord(ToBytes("before")));
+  writer.Rotate(OpenAt(second));
+  EXPECT_TRUE(writer.AddRecord(ToBytes("after")));
+
+  FlushAll(writer);
+  EXPECT_EQ("before", ReadAt(ArchivePath()));
+  EXPECT_EQ("after", ReadAt(second));
+}
+
+TEST_F(WarcWriterTest, RotationBoundaryHoldsUnderCoalescedFlushes) {
+  // The reason a rotation is a queue entry and not a task posted beside the
+  // queue. Flush tasks are coalesced, and a flush drains whatever is queued
+  // when it runs -- so a flush posted before the rotation would otherwise
+  // sweep records queued after it into the outgoing file. Nothing drains in
+  // between here, which is exactly the interleaving that gets it wrong.
+  const base::FilePath second = PathNamed("second.warc");
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/1024 * 1024,
+                    WarcWriter::Compression::kNone);
+
+  std::string before;
+  for (int i = 0; i < 200; ++i) {
+    const std::string record = "b" + base::NumberToString(i);
+    EXPECT_TRUE(writer.AddRecord(ToBytes(record)));
+    before += record;
+  }
+
+  writer.Rotate(OpenAt(second));
+
+  std::string after;
+  for (int i = 0; i < 200; ++i) {
+    const std::string record = "a" + base::NumberToString(i);
+    EXPECT_TRUE(writer.AddRecord(ToBytes(record)));
+    after += record;
+  }
+
+  FlushAll(writer);
+  EXPECT_EQ(before, ReadAt(ArchivePath()));
+  EXPECT_EQ(after, ReadAt(second));
+}
+
+TEST_F(WarcWriterTest, RotationIsNotDroppedWhenOverBudget) {
+  // Budget fits one record and no more.
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/8,
+                    WarcWriter::Compression::kNone);
+  const base::FilePath second = PathNamed("second.warc");
+
+  EXPECT_TRUE(writer.AddRecord(ToBytes("12345678")));
+  // Over budget now: a record queued here would be shed.
+  writer.Rotate(OpenAt(second));
+
+  // Shedding the rotation would leave the archive pointed at the old file and
+  // divert every later record into it.
+  FlushAll(writer);
+  EXPECT_TRUE(writer.AddRecord(ToBytes("after")));
+  FlushAll(writer);
+
+  EXPECT_EQ("12345678", ReadAt(ArchivePath()));
+  EXPECT_EQ("after", ReadAt(second));
+  EXPECT_EQ(0u, writer.dropped_records());
+}
+
+TEST_F(WarcWriterTest, RotationToInvalidFileStopsRecording) {
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/1024,
+                    WarcWriter::Compression::kNone);
+
+  EXPECT_TRUE(writer.AddRecord(ToBytes("kept")));
+  writer.Rotate(base::File());
+  EXPECT_TRUE(writer.AddRecord(ToBytes("nowhere to go")));
+
+  FlushAll(writer);
+  EXPECT_EQ("kept", ReadAt(ArchivePath()));
+}
+
+TEST_F(WarcWriterTest, RotationRevivesAnArchiveClosedByAWriteFailure) {
+  // A read-only handle stands in for a disk that stops accepting writes: the
+  // first record fails and closes the archive.
+  const base::FilePath unwritable = PathNamed("unwritable.warc");
+  WarcWriter writer(base::File(unwritable, base::File::FLAG_CREATE_ALWAYS |
+                                               base::File::FLAG_READ),
+                    /*max_queued_bytes=*/1024, WarcWriter::Compression::kNone);
+  const base::FilePath second = PathNamed("second.warc");
+
+  EXPECT_TRUE(writer.AddRecord(ToBytes("lost with the old file")));
+  FlushAll(writer);
+
+  // The failure describes the file it happened in, not its successor, so
+  // rotating gives a working archive again rather than staying dead.
+  writer.Rotate(OpenAt(second));
+  EXPECT_TRUE(writer.AddRecord(ToBytes("written to the new file")));
+
+  FlushAll(writer);
+  EXPECT_EQ("written to the new file", ReadAt(second));
+}
+
+TEST_F(WarcWriterTest, GzipRotationStartsAFreshMemberSequence) {
+  const base::FilePath second = PathNamed("second.warc.gz");
+  WarcWriter writer(OpenArchive(), /*max_queued_bytes=*/1024,
+                    WarcWriter::Compression::kGzipPerRecord);
+
+  EXPECT_TRUE(writer.AddRecord(ToBytes("first")));
+  EXPECT_TRUE(writer.AddRecord(ToBytes("second")));
+  writer.Rotate(OpenAt(second));
+  EXPECT_TRUE(writer.AddRecord(ToBytes("third")));
+
+  FlushAll(writer);
+
+  // Each file must stand alone as a clean concatenation of whole members: no
+  // member may straddle the boundary, or neither file is readable as a
+  // ".warc.gz". Per-record members are what makes that automatic.
+  const std::optional<std::vector<std::string>> old_members =
+      InflateGzipMembers(ReadAt(ArchivePath()));
+  ASSERT_TRUE(old_members.has_value());
+  EXPECT_EQ(std::vector<std::string>({"first", "second"}), *old_members);
+
+  const std::optional<std::vector<std::string>> new_members =
+      InflateGzipMembers(ReadAt(second));
+  ASSERT_TRUE(new_members.has_value());
+  EXPECT_EQ(std::vector<std::string>({"third"}), *new_members);
 }
 
 }  // namespace

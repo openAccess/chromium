@@ -67,6 +67,25 @@ class WarcWriter {
   // dropped because the queue was over budget.
   bool AddRecord(std::vector<uint8_t> record);
 
+  // Closes the current archive and continues into `file`, which must already be
+  // open for writing -- or be invalid, which stops recording and drops every
+  // record queued after this point.
+  //
+  // The boundary is exact: every record queued before this call goes to the old
+  // file and every record queued after it to the new one. That is why a
+  // rotation travels through the same queue as the records rather than being
+  // posted alongside it -- flush tasks are coalesced, so a flush posted before
+  // the rotation would otherwise drain records queued after it into the file
+  // they do not belong to. An index that names a file and an offset is only
+  // meaningful if that boundary holds.
+  //
+  // Unlike a record, a rotation is never dropped for being over budget:
+  // discarding one would send every later record to the wrong file.
+  //
+  // A rotation also reopens an archive that a write failure had closed, since
+  // the failure applies to the file it happened in and not to its successor.
+  void Rotate(base::File file);
+
   // Returns a spill for a block too large to hold in memory, writing into
   // `file` on this writer's own file sequence. That shared sequence is what
   // orders the spilled bytes ahead of the record that streams them, so no

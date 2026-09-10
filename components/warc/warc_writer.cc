@@ -62,7 +62,13 @@ struct WarcWriter::QueuedRecord {
   uint64_t id = 0;
   base::OnceCallback<void(base::File)> on_written;
 
+  // Set only for a rotation: the file that replaces the archive when this entry
+  // is drained, or an invalid file to stop writing altogether. A rotation
+  // carries no head and no body, and so costs the queue's budget nothing.
+  std::optional<base::File> rotate_to;
+
   bool spilled() const { return spill != nullptr; }
+  bool is_rotation() const { return rotate_to.has_value(); }
 };
 
 // Holds records handed over by the producing sequence until the file sequence
@@ -109,6 +115,20 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
     *should_post_flush = !flush_pending_;
     flush_pending_ = true;
     return std::nullopt;
+  }
+
+  // Adds a rotation, which takes its place in line among the records so that
+  // the file it installs receives exactly those queued after it.
+  //
+  // A rotation is never shed for being over budget, as a record would be:
+  // every entry behind it is destined for the file it installs, so dropping
+  // one would divert all of them into the archive they do not belong to. It
+  // costs no budget either, having no head to hold in memory.
+  void AddRotation(QueuedRecord rotation, bool* should_post_flush) {
+    base::AutoLock auto_lock(lock_);
+    records_.push_back(std::move(rotation));
+    *should_post_flush = !flush_pending_;
+    flush_pending_ = true;
   }
 
   // Pops the oldest record if it is ready to write. Returns nothing when the
@@ -186,6 +206,10 @@ class WarcWriter::FileWriter {
   void Flush(scoped_refptr<WriteQueue> queue) {
     while (std::optional<QueuedRecord> taken = queue->TakeFrontIfReady()) {
       QueuedRecord& record = *taken;
+      if (record.is_rotation()) {
+        Rotate(std::move(*record.rotate_to));
+        continue;
+      }
       const bool wrote = file_.IsValid() && WriteRecord(record);
       // The file comes back whether or not the record was written, so the
       // producer is never left waiting on one the archive has given up on.
@@ -199,6 +223,24 @@ class WarcWriter::FileWriter {
       // A closed archive still drains the queue, so every spill comes back.
       std::ignore = wrote;
     }
+  }
+
+  // Installs `file` as the archive and closes the one it replaces.
+  //
+  // The outgoing file is flushed rather than merely closed: a rotated-off
+  // segment is finished, and whatever reads it next -- an index, a container,
+  // another process entirely -- is entitled to find it complete on disk the
+  // moment the boundary passes.
+  //
+  // An invalid `file` stops recording, and every record drained afterwards is
+  // discarded by the IsValid() check in Flush(). A valid one revives an archive
+  // that a write failure had closed, since that failure describes the file it
+  // happened in, not its successor.
+  void Rotate(base::File file) {
+    if (file_.IsValid()) {
+      file_.Flush();
+    }
+    file_ = std::move(file);
   }
 
   // Writes one record, compressing it into a member of its own where the
@@ -331,6 +373,20 @@ bool WarcWriter::AddRecord(std::vector<uint8_t> record) {
   QueuedRecord queued_record;
   queued_record.head = std::move(record);
   return Enqueue(std::move(queued_record));
+}
+
+void WarcWriter::Rotate(base::File file) {
+  QueuedRecord rotation;
+  rotation.rotate_to = std::move(file);
+
+  bool should_post_flush = false;
+  queue_->AddRotation(std::move(rotation), &should_post_flush);
+  if (should_post_flush) {
+    file_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&FileWriter::Flush, base::Unretained(file_writer_.get()),
+                       queue_));
+  }
 }
 
 std::unique_ptr<WarcBodySpill> WarcWriter::CreateBodySpill(base::File file) {
