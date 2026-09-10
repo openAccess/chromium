@@ -119,6 +119,28 @@ class WarcRecorderTest : public testing::Test {
                                           redact_credentials);
   }
 
+  base::FilePath PathNamed(std::string_view name) {
+    return temp_dir_.GetPath().AppendASCII(name);
+  }
+
+  base::File OpenAt(const base::FilePath& path) {
+    return base::File(path,
+                      base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+  }
+
+  std::string ReadAt(const base::FilePath& path) {
+    std::string contents;
+    EXPECT_TRUE(base::ReadFileToString(path, &contents));
+    return contents;
+  }
+
+  // Tears the recorder down so everything queued reaches whichever file was
+  // current when it was queued.
+  void Finish(std::unique_ptr<WarcRecorder> recorder) {
+    recorder.reset();
+    task_environment_.RunUntilIdle();
+  }
+
   // Tears the recorder down so everything is flushed, then returns the archive.
   std::string FinishAndRead(std::unique_ptr<WarcRecorder> recorder) {
     recorder.reset();
@@ -785,6 +807,171 @@ TEST_F(WarcRecorderTest, RedactionLeavesContentLengthAndDigestsConsistent) {
   EXPECT_EQ(warc::ComputeDigest(base::as_byte_span(response->block),
                                 warc::DigestAlgorithm::kSha1),
             response->Field("WARC-Block-Digest"));
+}
+
+// The warcinfo record describing `browsing_context` within `records`.
+const ParsedRecord* FindContextWarcinfo(
+    const std::vector<ParsedRecord>& records,
+    std::string_view browsing_context) {
+  return FindRecord(records, "warcinfo",
+                    base::StrCat({"browsing-context: ", browsing_context}));
+}
+
+TEST_F(WarcRecorderTest, RotationSendsLaterRecordsToTheNewFile) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  recorder->Rotate(OpenAt(second), "second.warc");
+  RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
+  Finish(std::move(recorder));
+
+  const std::string old_file = ReadAt(ArchivePath());
+  const std::string new_file = ReadAt(second);
+
+  EXPECT_NE(old_file.find("https://a.example/1"), std::string::npos);
+  EXPECT_EQ(old_file.find("https://b.example/1"), std::string::npos);
+  EXPECT_NE(new_file.find("https://b.example/1"), std::string::npos);
+  EXPECT_EQ(new_file.find("https://a.example/1"), std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, EachFileGetsItsOwnFileLevelWarcinfo) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  recorder->Rotate(OpenAt(second), "second.warc");
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/2"));
+  Finish(std::move(recorder));
+
+  // Each segment names itself, so a reader handed one file alone can still say
+  // what it was called when it was written.
+  const std::vector<ParsedRecord> old_records =
+      ParseRecords(ReadAt(ArchivePath()));
+  const std::vector<ParsedRecord> new_records = ParseRecords(ReadAt(second));
+
+  const ParsedRecord* old_info = FindRecord(old_records, "warcinfo");
+  const ParsedRecord* new_info = FindRecord(new_records, "warcinfo");
+  ASSERT_TRUE(old_info);
+  ASSERT_TRUE(new_info);
+  EXPECT_EQ("out.warc", old_info->Field("WARC-Filename"));
+  EXPECT_EQ("second.warc", new_info->Field("WARC-Filename"));
+}
+
+TEST_F(WarcRecorderTest, ContextWarcinfoIsReMintedAfterRotation) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  // One context spanning the rotation, which is the case that goes wrong if the
+  // minted ids are carried across: the records in the new file would cite a
+  // warcinfo that stayed behind in the old one.
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  recorder->Rotate(OpenAt(second), "second.warc");
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/2"));
+  Finish(std::move(recorder));
+
+  const std::vector<ParsedRecord> old_records =
+      ParseRecords(ReadAt(ArchivePath()));
+  const std::vector<ParsedRecord> new_records = ParseRecords(ReadAt(second));
+
+  const ParsedRecord* old_context =
+      FindContextWarcinfo(old_records, "https://a.example");
+  const ParsedRecord* new_context =
+      FindContextWarcinfo(new_records, "https://a.example");
+  ASSERT_TRUE(old_context);
+  ASSERT_TRUE(new_context) << "the new file has no warcinfo for the context "
+                              "that kept recording into it";
+  EXPECT_NE(old_context->Field("WARC-Record-ID"),
+            new_context->Field("WARC-Record-ID"));
+
+  // And the context's warcinfo points at the file it now lives in.
+  EXPECT_NE(new_context->block.find("isPartOf: second.warc"),
+            std::string::npos);
+
+  // Every record cites a warcinfo present in its own file.
+  for (const auto& [records, context] :
+       {std::make_pair(old_records, old_context),
+        std::make_pair(new_records, new_context)}) {
+    for (const ParsedRecord& record : records) {
+      const std::string type = record.Field("WARC-Type");
+      if (type != "request" && type != "response") {
+        continue;
+      }
+      EXPECT_EQ(context->Field("WARC-Record-ID"),
+                record.Field("WARC-Warcinfo-ID"));
+    }
+  }
+}
+
+TEST_F(WarcRecorderTest, ContextThatGoesQuietCostsTheNewFileNoWarcinfo) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  recorder->Rotate(OpenAt(second), "second.warc");
+  RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
+  Finish(std::move(recorder));
+
+  // A warcinfo is written when a context first archives something, not when the
+  // file opens, so a context that stops after the rotation leaves no record
+  // describing nothing.
+  const std::vector<ParsedRecord> new_records = ParseRecords(ReadAt(second));
+  EXPECT_FALSE(FindContextWarcinfo(new_records, "https://a.example"));
+  EXPECT_TRUE(FindContextWarcinfo(new_records, "https://b.example"));
+}
+
+TEST_F(WarcRecorderTest, RotationDoesNotSplitAnExchange) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  // An exchange already under way when the rotation arrives.
+  auto exchange = recorder->CreateExchangeRecorder("https://a.example");
+  exchange->SetTargetUrl(GURL("https://a.example/1"));
+  net::HttpRawRequestHeaders headers;
+  headers.set_request_line("GET / HTTP/1.1\r\n");
+  exchange->SetRequestHeaders(headers, "GET");
+  exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
+
+  recorder->Rotate(OpenAt(second), "second.warc");
+
+  // The pair is handed over as one act, so it lands wholly in the file that is
+  // current when the exchange completes rather than half in each.
+  exchange->Finish();
+  exchange.reset();
+  Finish(std::move(recorder));
+
+  const std::vector<ParsedRecord> old_records =
+      ParseRecords(ReadAt(ArchivePath()));
+  const std::vector<ParsedRecord> new_records = ParseRecords(ReadAt(second));
+
+  EXPECT_FALSE(FindRecord(old_records, "request"));
+  EXPECT_FALSE(FindRecord(old_records, "response"));
+  const ParsedRecord* request = FindRecord(new_records, "request");
+  const ParsedRecord* response = FindRecord(new_records, "response");
+  ASSERT_TRUE(request);
+  ASSERT_TRUE(response);
+  EXPECT_EQ(request->Field("WARC-Record-ID"),
+            response->Field("WARC-Concurrent-To"));
+}
+
+TEST_F(WarcRecorderTest, RotatingToNoFileStopsRecording) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  recorder->Rotate(base::File(), std::string());
+  RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
+  Finish(std::move(recorder));
+
+  const std::string old_file = ReadAt(ArchivePath());
+  EXPECT_NE(old_file.find("https://a.example/1"), std::string::npos);
+  // Nowhere to write it, and nothing appended to the file just closed.
+  EXPECT_EQ(old_file.find("https://b.example/1"), std::string::npos);
 }
 
 }  // namespace

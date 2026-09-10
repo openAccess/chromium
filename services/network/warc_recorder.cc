@@ -536,6 +536,30 @@ void WarcRecorder::WriteWarcinfo(const std::string& filename) {
                                            warc::DigestAlgorithm::kSha1));
 }
 
+void WarcRecorder::Rotate(base::File file, const std::string& filename) {
+  const bool recording_continues = file.IsValid();
+
+  // Handed over before anything below it, so every record that follows lands in
+  // the new file. The rotation and the records travel the same queue, which
+  // preserves the order they were given in.
+  writer_->Rotate(std::move(file));
+
+  // These name warcinfo records that stay behind in the file just closed. Kept,
+  // they would leave every record in the new file citing a record it does not
+  // contain. WARC 1.1 permits that -- WARC-Warcinfo-ID may cross files -- but a
+  // segment that cannot describe itself defeats the point of writing a rotated
+  // set at all. Cleared, each context mints a fresh warcinfo into the new file
+  // the next time it archives anything, and a context that goes quiet after the
+  // rotation costs the new file nothing.
+  context_warcinfo_ids_.clear();
+
+  if (!recording_continues) {
+    filename_.clear();
+    return;
+  }
+  WriteWarcinfo(filename);
+}
+
 base::RepeatingCallback<std::string()> WarcRecorder::WarcinfoResolver(
     const std::string& browsing_context) {
   // An exchange can outlive the session recorder, in which case there is

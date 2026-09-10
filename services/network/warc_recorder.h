@@ -250,9 +250,23 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // the archive, exactly as it does the archive.
   void SetSpillFile(base::File file);
 
-  // Writes the warcinfo record that describes this capture. Called once, before
-  // any exchange records.
+  // Writes the warcinfo record that heads a file, naming it in WARC-Filename.
+  // Called before any exchange records reach that file: once when the session
+  // starts, and again for each file a rotation opens.
   void WriteWarcinfo(const std::string& filename);
+
+  // Closes the current archive and continues into `file`, which the browser
+  // opens for the same reason it opens the first one -- the network service is
+  // sandboxed. `filename` names the new file in its own warcinfo, so every
+  // segment says what it is called wherever it later ends up.
+  //
+  // An invalid `file` stops recording instead: later records are discarded, and
+  // no warcinfo is written since nothing would receive it.
+  //
+  // A rotation never splits an exchange. A request and its response are handed
+  // to the writer together as one act, and a rotation takes its place in the
+  // same queue, so a concurrent pair cannot end up straddling two files.
+  void Rotate(base::File file, const std::string& filename);
 
   warc::WarcWriter& writer_for_testing() { return *writer_; }
 
@@ -265,7 +279,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // each context's own warcinfo.
   std::string filename_;
 
-  // Warcinfo record id per browsing context, minted on first sight of one.
+  // Warcinfo record id per browsing context, minted on first sight of one
+  // within the current file. Rotation clears them, since the records they name
+  // stay behind in the file being closed.
   std::map<std::string, std::string> context_warcinfo_ids_;
 
   // Resolves, on demand, the warcinfo id describing `browsing_context`.
