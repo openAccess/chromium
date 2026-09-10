@@ -5039,7 +5039,9 @@ inline constexpr char kWarcOutputName[] = "Record traffic as a WARC archive";
 inline constexpr char kWarcOutputDescription[] =
     "Writes every HTTP request and response handled by the browser, bodies "
     "included, to the given path as a WARC archive (ISO 28500). A path ending "
-    "in \".gz\" is compressed, one gzip member per record. Because this "
+    "in \".gz\" is compressed, one gzip member per record. Give an existing "
+    "directory instead and the capture is written inside it as a numbered "
+    "series named by the browser. Because this "
     "records everything the browser sends and receives -- including "
     "credentials, cookies and personal data -- treat the resulting file as "
     "sensitive. Applies to the whole browser, not one tab, and takes effect "

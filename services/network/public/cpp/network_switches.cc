@@ -82,6 +82,13 @@ const char kSSLKeyLogFile[] = "ssl-key-log-file";
 // record in a gzip member of its own. That is the layout WARC tooling expects
 // of a ".warc.gz", and the one that lets a reader decompress a single record
 // without reading the records before it.
+//
+// Naming an existing directory instead puts the capture inside it and leaves
+// the naming to the browser: chrdl-<YYYYMMDDHHMMSS>-00000.warc.gz, numbered
+// from the start so that adding --warc-max-file-size later changes nothing
+// about the first file's name. That is usually what is wanted, since a capture
+// is a set of files rather than one. Only an existing directory counts; a path
+// that does not exist yet is a file, as it has always been.
 const char kWarcOutput[] = "warc-output";
 
 // Keeps cookie and authorization values in a WARC archive instead of redacting

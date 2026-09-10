@@ -608,6 +608,12 @@ net::NetLogFileFormat GetNetLogFileFormatFromCommandLineForTesting(  // IN-TEST
   return GetNetLogFileFormatFromCommandLine(command_line);
 }
 
+// What the browser calls the files when --warc-output names a directory to
+// write a capture into rather than a file to write it to. Gzip because that is
+// what an archive is conventionally kept as, and because one member per record
+// leaves it seekable.
+constexpr char kWarcDirectoryModeName[] = "chrdl.warc.gz";
+
 // The 14-digit UTC timestamp naming a capture, as web archive tooling spells a
 // time. Fixed when recording starts, so every file of one session carries the
 // same one and a later session writes a set of its own rather than over the
@@ -718,6 +724,14 @@ class NetworkServiceInstancePrivate {
                                      int file_flags) {
     base::ScopedAllowBlocking allow_blocking;
     return base::File(path, file_flags);
+  }
+
+  // Whether --warc-output named a directory to write a capture into. Blocking
+  // for the same reason the open above is: this decides where startup output
+  // goes, so deferring it would lose the beginning of the capture.
+  static bool BlockingDirectoryExists(const base::FilePath& path) {
+    base::ScopedAllowBlocking allow_blocking;
+    return base::DirectoryExists(path);
   }
 };
 
@@ -883,16 +897,27 @@ network::mojom::NetworkService* GetNetworkService() {
             max_file_bytes = 0;
           }
 
-          // A capture that rotates is a set, and a member of a set is named for
-          // the set it belongs to and its place in it -- so the first file is
-          // numbered too, rather than the path given standing apart from the
-          // rest. A capture that does not rotate is one file and is written
-          // exactly where it was asked to be.
+          // A directory says "put a capture in here" and leaves the naming to
+          // us; a file says "write it exactly there". Only an existing
+          // directory counts, so a path that is simply not there yet is still
+          // a file, as it always was.
+          const bool into_directory =
+              NetworkServiceInstancePrivate::BlockingDirectoryExists(warc_path);
+          const base::FilePath base_path =
+              into_directory ? warc_path.AppendASCII(kWarcDirectoryModeName)
+                             : warc_path;
+
+          // A capture the browser names is a set whether or not it rotates, so
+          // it is numbered from the start: one file today, and no renaming if a
+          // threshold is added tomorrow. A capture named by the user is left
+          // alone unless rotation forces the issue, since a single file asked
+          // for by path should appear at that path.
+          const bool serial_names = into_directory || max_file_bytes > 0;
           const std::string timestamp =
-              max_file_bytes > 0 ? WarcCaptureTimestamp() : std::string();
+              serial_names ? WarcCaptureTimestamp() : std::string();
           const base::FilePath first_path =
-              max_file_bytes > 0 ? SerialWarcPath(warc_path, timestamp, 0)
-                                 : warc_path;
+              serial_names ? SerialWarcPath(base_path, timestamp, 0)
+                           : base_path;
 
           // The network service is sandboxed and cannot open an arbitrary path,
           // so open it here and hand the descriptor across, as the NetLog and
@@ -906,9 +931,10 @@ network::mojom::NetworkService* GetNetworkService() {
           } else {
             // A ".gz" path selects gzip framing, the way wget and other
             // capture tools spell the same choice. The network service never
-            // sees the path, so this has to be decided here.
+            // sees the path, so this has to be decided here. In directory
+            // mode the name is ours and already says ".gz".
             const bool compress_records =
-                warc_path.MatchesFinalExtension(FILE_PATH_LITERAL(".gz"));
+                base_path.MatchesFinalExtension(FILE_PATH_LITERAL(".gz"));
             // Scratch space for resources too large to assemble in memory.
             // The network service is sandboxed and cannot open one itself, so
             // it is opened here beside the archive and deleted on close --
@@ -933,7 +959,7 @@ network::mojom::NetworkService* GetNetworkService() {
               // startup. It goes away with the pipe.
               mojo::PendingRemote<network::mojom::WarcOutputProvider> provider;
               mojo::MakeSelfOwnedReceiver(
-                  std::make_unique<WarcOutputProviderImpl>(warc_path, timestamp,
+                  std::make_unique<WarcOutputProviderImpl>(base_path, timestamp,
                                                            /*first_serial=*/1),
                   provider.InitWithNewPipeAndPassReceiver());
               g_observed_network_service->remote()->SetWarcRotationPolicy(
