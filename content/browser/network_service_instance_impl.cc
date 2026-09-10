@@ -612,7 +612,17 @@ net::NetLogFileFormat GetNetLogFileFormatFromCommandLineForTesting(  // IN-TEST
 // write a capture into rather than a file to write it to. Gzip because that is
 // what an archive is conventionally kept as, and because one member per record
 // leaves it seekable.
+constexpr char kWarcCapturePrefix[] = "chrdl";
 constexpr char kWarcDirectoryModeName[] = "chrdl.warc.gz";
+
+// The directory the current capture is writing into, empty unless
+// --warc-output named a directory. Set once when recording starts and read by
+// anything that has to write beside the archives -- the page list, in
+// chrome/browser -- since the name is not derivable after the fact.
+base::FilePath& WarcCaptureDirectory() {
+  static base::NoDestructor<base::FilePath> directory;
+  return *directory;
+}
 
 // The 14-digit UTC timestamp naming a capture, as web archive tooling spells a
 // time. Fixed when recording starts, so every file of one session carries the
@@ -732,6 +742,11 @@ class NetworkServiceInstancePrivate {
   static bool BlockingDirectoryExists(const base::FilePath& path) {
     base::ScopedAllowBlocking allow_blocking;
     return base::DirectoryExists(path);
+  }
+
+  static bool BlockingCreateDirectory(const base::FilePath& path) {
+    base::ScopedAllowBlocking allow_blocking;
+    return base::CreateDirectory(path);
   }
 };
 
@@ -903,9 +918,6 @@ network::mojom::NetworkService* GetNetworkService() {
           // a file, as it always was.
           const bool into_directory =
               NetworkServiceInstancePrivate::BlockingDirectoryExists(warc_path);
-          const base::FilePath base_path =
-              into_directory ? warc_path.AppendASCII(kWarcDirectoryModeName)
-                             : warc_path;
 
           // A capture the browser names is a set whether or not it rotates, so
           // it is numbered from the start: one file today, and no renaming if a
@@ -915,6 +927,28 @@ network::mojom::NetworkService* GetNetworkService() {
           const bool serial_names = into_directory || max_file_bytes > 0;
           const std::string timestamp =
               serial_names ? WarcCaptureTimestamp() : std::string();
+
+          // One session gets one directory, holding however many pages are
+          // visited before the browser exits, the archives they are spread
+          // across, and the page list describing them. Everything a WACZ is
+          // built from is then in one place and complete, and two sessions
+          // pointed at the same directory cannot tread on each other -- the
+          // second used to replace the first's page list while leaving its
+          // archives behind, which left a capture that could not be replayed.
+          base::FilePath base_path = warc_path;
+          if (into_directory) {
+            const base::FilePath capture_directory = warc_path.AppendASCII(
+                base::StrCat({kWarcCapturePrefix, "-", timestamp}));
+            if (!NetworkServiceInstancePrivate::BlockingCreateDirectory(
+                    capture_directory)) {
+              LOG(ERROR) << "Failed creating WARC capture directory: "
+                         << capture_directory.value();
+            } else {
+              WarcCaptureDirectory() = capture_directory;
+              base_path = capture_directory.AppendASCII(kWarcDirectoryModeName);
+            }
+          }
+
           const base::FilePath first_path =
               serial_names ? SerialWarcPath(base_path, timestamp, 0)
                            : base_path;
@@ -1012,6 +1046,10 @@ void RemoveNetworkServiceProcessObserver(
     return;
   }
   g_observed_network_service->RemoveObserver(observer);
+}
+
+base::FilePath GetWarcCaptureDirectory() {
+  return WarcCaptureDirectory();
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

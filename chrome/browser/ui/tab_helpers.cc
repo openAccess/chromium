@@ -278,6 +278,7 @@
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "chrome/browser/contextual_tasks/search_ai_mode_promo_tab_helper.h"
+#include "chrome/browser/warc_page_recorder.h"
 #include "components/signin/public/base/signin_switches.h"
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
@@ -331,6 +332,7 @@ void TabHelpers::AttachTabHelpers(WebContents* web_contents,
   // ZoomController comes before common tab helpers since ChromeAutofillClient
   // may want to register as a ZoomObserver with it.
   zoom::ZoomController::CreateForWebContents(web_contents);
+  WarcPageRecorder::MaybeCreateForWebContents(web_contents);
 
   // infobars::ContentInfoBarManager comes before common tab helpers since
   // ChromeSubresourceFilterClient has it as a dependency.

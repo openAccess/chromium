@@ -6,6 +6,7 @@
 #define CONTENT_PUBLIC_BROWSER_NETWORK_SERVICE_INSTANCE_H_
 
 #include "base/feature_list.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "build/build_config.h"
 #include "content/common/content_export.h"
@@ -60,6 +61,17 @@ CONTENT_EXPORT network::mojom::NetworkService* GetNetworkService();
 // Returns the global NetworkChangeNotifier instance.
 CONTENT_EXPORT net::NetworkChangeNotifier* GetNetworkChangeNotifier();
 #endif
+
+// The directory a --warc-output capture is writing into, or an empty path when
+// nothing is being captured or the capture is a single file the user named.
+//
+// A capture told to write into a directory takes one of its own inside it,
+// holding every archive it writes and the page list that describes them. That
+// keeps a capture self-contained -- which is what a WACZ is built from -- and
+// keeps one capture from disturbing another written to the same place. The name
+// is settled when recording starts, so it has to be asked for rather than
+// worked out again by whoever needs it.
+CONTENT_EXPORT base::FilePath GetWarcCaptureDirectory();
 
 // Call |FlushForTesting()| on cached |mojo::Remote<NetworkService>|. For
 // testing only. Must only be called on the UI thread.

@@ -89,6 +89,14 @@ const char kSSLKeyLogFile[] = "ssl-key-log-file";
 // about the first file's name. That is usually what is wanted, since a capture
 // is a set of files rather than one. Only an existing directory counts; a path
 // that does not exist yet is a file, as it has always been.
+//
+// Each capture takes a directory of its own inside it, holding every archive it
+// writes and a "pages.jsonl" listing the pages that were visited and what they
+// were called. A WACZ needs that page list and nothing in a WARC can supply it,
+// since a WARC records the resources fetched rather than the pages navigated
+// to. Keeping the two together means a capture is self-contained -- browse as
+// many pages as you like, and the directory holds all of them -- and that
+// capturing twice into the same place cannot disturb what is already there.
 const char kWarcOutput[] = "warc-output";
 
 // Keeps cookie and authorization values in a WARC archive instead of redacting

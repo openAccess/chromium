@@ -875,6 +875,8 @@ source_set("core") {
     "unexpire_flags.cc",
     "unexpire_flags.h",
     "universal_web_contents_observers.cc",
+    "warc_page_recorder.cc",
+    "warc_page_recorder.h",
   ]
 
   configs += [
