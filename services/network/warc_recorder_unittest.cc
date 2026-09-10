@@ -19,6 +19,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/warc/warc_test_util.h"
@@ -133,6 +134,14 @@ class WarcRecorderTest : public testing::Test {
     std::string contents;
     EXPECT_TRUE(base::ReadFileToString(path, &contents));
     return contents;
+  }
+
+  // Blocks until everything queued so far is on disk, so the recorder's own
+  // view of how big the current file is has caught up.
+  void FlushWriter(WarcRecorder& recorder) {
+    base::test::TestFuture<void> flushed;
+    recorder.writer_for_testing().Flush(flushed.GetCallback());
+    EXPECT_TRUE(flushed.Wait());
   }
 
   // Tears the recorder down so everything queued reaches whichever file was
@@ -598,6 +607,22 @@ void RecordExchange(WarcRecorder& recorder,
   exchange->Finish();
 }
 
+// Records an exchange whose response carries `body`, so a test can put a known
+// quantity of bytes into the archive.
+void RecordExchangeWithBody(WarcRecorder& recorder,
+                            const std::string& browsing_context,
+                            const GURL& url,
+                            std::string_view body) {
+  auto exchange = recorder.CreateExchangeRecorder(browsing_context);
+  exchange->SetTargetUrl(url);
+  net::HttpRawRequestHeaders headers;
+  headers.set_request_line("GET / HTTP/1.1\r\n");
+  exchange->SetRequestHeaders(headers, "GET");
+  exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
+  exchange->AddBodyBytes(base::as_byte_span(body));
+  exchange->Finish();
+}
+
 TEST_F(WarcRecorderTest, EachBrowsingContextGetsItsOwnWarcinfo) {
   auto recorder = MakeRecorder();
   recorder->WriteWarcinfo("out.warc");
@@ -1001,6 +1026,146 @@ TEST_F(WarcRecorderTest, RotationReportsTheOutgoingFileComplete) {
   EXPECT_NE(old_file.find("https://a.example/1"), std::string::npos);
 
   Finish(std::move(recorder));
+}
+
+TEST_F(WarcRecorderTest, RotatesOnceTheFileGrowsPastTheThreshold) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  int requests = 0;
+  recorder->SetRotationPolicy(
+      /*max_file_bytes=*/4096,
+      base::BindLambdaForTesting([&](WarcRecorder::NextFileCallback reply) {
+        ++requests;
+        std::move(reply).Run(OpenAt(second), "second.warc");
+      }));
+
+  // Nothing is on disk yet, so there is nothing to rotate away from however
+  // much has been queued.
+  const std::string big(8192, 'x');
+  RecordExchangeWithBody(*recorder, "https://a.example",
+                         GURL("https://a.example/1"), big);
+  EXPECT_EQ(0, requests);
+
+  FlushWriter(*recorder);
+
+  // Now the file has grown past the threshold, and the next exchange to begin
+  // asks for somewhere else to put it.
+  RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
+  EXPECT_EQ(1, requests);
+
+  // The count describes the new file, not the session, and rotating resets it
+  // there and then rather than waiting for a drain -- so the small records now
+  // in the new file leave it well under the threshold and nothing asks again.
+  FlushWriter(*recorder);
+  RecordExchange(*recorder, "https://b.example", GURL("https://b.example/2"));
+  EXPECT_EQ(1, requests);
+  Finish(std::move(recorder));
+
+  EXPECT_NE(ReadAt(ArchivePath()).find("https://a.example/1"),
+            std::string::npos);
+  EXPECT_NE(ReadAt(second).find("https://b.example/1"), std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, RotationResetsTheSizeCountImmediately) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  const std::string big(8192, 'x');
+  RecordExchangeWithBody(*recorder, "https://a.example",
+                         GURL("https://a.example/1"), big);
+  FlushWriter(*recorder);
+  EXPECT_GT(recorder->writer_for_testing().bytes_written(), 4096u);
+
+  recorder->Rotate(OpenAt(second), "second.warc", base::DoNothing());
+
+  // Read before any drain has run, which is the case that matters: a size
+  // threshold consulted in this window must not still see the closed file's
+  // size, or it would ask to rotate again the moment it was asked anything.
+  EXPECT_EQ(0u, recorder->writer_for_testing().bytes_written());
+
+  Finish(std::move(recorder));
+}
+
+TEST_F(WarcRecorderTest, OnlyOneRequestForTheNextFileIsOutstanding) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+  const base::FilePath second = PathNamed("second.warc");
+
+  int requests = 0;
+  WarcRecorder::NextFileCallback held;
+  recorder->SetRotationPolicy(
+      /*max_file_bytes=*/1,
+      base::BindLambdaForTesting([&](WarcRecorder::NextFileCallback reply) {
+        ++requests;
+        held = std::move(reply);
+      }));
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  FlushWriter(*recorder);
+
+  // The file stays over the threshold for as long as the request is unanswered,
+  // so without a guard every exchange in that window would ask again.
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/2"));
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/3"));
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/4"));
+  EXPECT_EQ(1, requests);
+
+  // Those exchanges are not lost or held back waiting for an answer; they go to
+  // the file that is still open.
+  ASSERT_TRUE(held);
+  std::move(held).Run(OpenAt(second), "second.warc");
+  Finish(std::move(recorder));
+
+  const std::string old_file = ReadAt(ArchivePath());
+  EXPECT_NE(old_file.find("https://a.example/2"), std::string::npos);
+  EXPECT_NE(old_file.find("https://a.example/4"), std::string::npos);
+}
+
+TEST_F(WarcRecorderTest, ZeroThresholdNeverRotates) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+
+  int requests = 0;
+  recorder->SetRotationPolicy(
+      /*max_file_bytes=*/0,
+      base::BindLambdaForTesting(
+          [&](WarcRecorder::NextFileCallback reply) { ++requests; }));
+
+  for (int i = 0; i < 5; ++i) {
+    RecordExchange(
+        *recorder, "https://a.example",
+        GURL(base::StrCat({"https://a.example/", base::NumberToString(i)})));
+    FlushWriter(*recorder);
+  }
+
+  // The default: a session records into the one file it was given.
+  EXPECT_EQ(0, requests);
+  Finish(std::move(recorder));
+}
+
+TEST_F(WarcRecorderTest, DecliningTheNextFileStopsRecording) {
+  auto recorder = MakeRecorder();
+  recorder->WriteWarcinfo("out.warc");
+
+  recorder->SetRotationPolicy(
+      /*max_file_bytes=*/1,
+      base::BindLambdaForTesting([&](WarcRecorder::NextFileCallback reply) {
+        // Out of disk, or asked to stop.
+        std::move(reply).Run(base::File(), std::string());
+      }));
+
+  RecordExchange(*recorder, "https://a.example", GURL("https://a.example/1"));
+  FlushWriter(*recorder);
+  RecordExchange(*recorder, "https://b.example", GURL("https://b.example/1"));
+  Finish(std::move(recorder));
+
+  // What was already archived stands; what came after has nowhere to go.
+  const std::string old_file = ReadAt(ArchivePath());
+  EXPECT_NE(old_file.find("https://a.example/1"), std::string::npos);
+  EXPECT_EQ(old_file.find("https://b.example/1"), std::string::npos);
 }
 
 }  // namespace

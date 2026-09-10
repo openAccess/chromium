@@ -182,6 +182,23 @@ interface GssapiLibraryLoadObserver {
   OnBeforeGssapiLibraryLoad();
 };
 
+// Opens the files a WARC recording rotates into. Implemented in the browser
+// process, because the network service is sandboxed and cannot open a path
+// itself -- the same reason StartWarcRecording is handed an already-open file.
+interface WarcOutputProvider {
+  // Returns the next file to record into, and the name to record in its
+  // warcinfo so that the segment names itself.
+  //
+  // Called when the file being written has grown past the threshold set by
+  // SetWarcRotationPolicy. The implementer decides where each file goes and
+  // what it is called; the service only asks.
+  //
+  // A null file declines to continue, which stops recording: requests handled
+  // afterwards are not archived. Declining is how a provider that has run out
+  // of disk, or been asked to stop, says so.
+  ProvideNextFile() => (mojo_base.mojom.File? file, string filename);
+};
+
 // Implemented by the network service. The browser process sends messages to
 // the network service over this interface.
 //
@@ -277,6 +294,27 @@ interface NetworkService {
   //
   // Replies without doing anything if no recording is in progress.
   RotateWarcOutput(mojo_base.mojom.File? file, string filename) => ();
+
+  // Rotates the WARC archive on its own once the file being written passes
+  // |max_file_bytes|, asking |provider| for each new file. This is how a
+  // session becomes a series of bounded archives -- the ~1GB files web archives
+  // are conventionally written in -- rather than one that grows for as long as
+  // the browser runs.
+  //
+  // |max_file_bytes| counts bytes as they land on disk, so compressed bytes for
+  // a gzipped archive, which is what a threshold on the resulting file has to
+  // mean. Zero disables automatic rotation, which is the default.
+  //
+  // The threshold is soft. The size is checked between exchanges, against a
+  // count that lags what is queued, and obtaining a file takes a round trip to
+  // |provider| -- so a file passes the threshold and keeps growing until the
+  // answer arrives. No record is ever split or delayed to make a file land on a
+  // boundary: an archive's worth is in being complete, not in being a given
+  // size.
+  //
+  // Does nothing if no recording is in progress.
+  SetWarcRotationPolicy(pending_remote<WarcOutputProvider> provider,
+                        uint64 max_file_bytes);
 
   // Creates a new network context with the given parameters.
   // This method is not used on Desktop (excluding Android Desktop) when the

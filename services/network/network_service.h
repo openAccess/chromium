@@ -180,6 +180,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   void RotateWarcOutput(base::File file,
                         const std::string& filename,
                         RotateWarcOutputCallback callback) override;
+  void SetWarcRotationPolicy(
+      mojo::PendingRemote<mojom::WarcOutputProvider> provider,
+      uint64_t max_file_bytes) override;
   void CreateNetworkContext(
       mojo::PendingReceiver<mojom::NetworkContext> receiver,
       mojom::NetworkContextParamsPtr params) override;
@@ -614,6 +617,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
 
 #if BUILDFLAG(IS_LINUX)
   mojo::Remote<mojom::GssapiLibraryLoadObserver> gssapi_library_load_observer_;
+
+  // Opens the files automatic rotation continues into. Held for the life of the
+  // recording, since it is asked once per file rather than once per session.
+  mojo::Remote<mojom::WarcOutputProvider> warc_output_provider_;
 #endif  // BUILDFLAG(IS_LINUX)
 
   bool exclusive_cookie_database_locking_ = true;

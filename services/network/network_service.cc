@@ -1418,6 +1418,33 @@ void NetworkService::RotateWarcOutput(base::File file,
   warc_recorder_->Rotate(std::move(file), filename, std::move(callback));
 }
 
+void NetworkService::SetWarcRotationPolicy(
+    mojo::PendingRemote<mojom::WarcOutputProvider> provider,
+    uint64_t max_file_bytes) {
+  if (!warc_recorder_) {
+    return;
+  }
+
+  warc_output_provider_.reset();
+  warc_output_provider_.Bind(std::move(provider));
+
+  // The recorder asks for a file; the provider answers with one. Binding the
+  // remote's reply straight to the recorder's callback keeps the service out of
+  // the middle, which is where it belongs: it knows the size, and the browser
+  // knows what the next file should be called and where it goes.
+  warc_recorder_->SetRotationPolicy(
+      max_file_bytes,
+      base::BindRepeating(
+          [](NetworkService* service, WarcRecorder::NextFileCallback reply) {
+            if (!service->warc_output_provider_.is_bound()) {
+              std::move(reply).Run(base::File(), std::string());
+              return;
+            }
+            service->warc_output_provider_->ProvideNextFile(std::move(reply));
+          },
+          base::Unretained(this)));
+}
+
 std::unique_ptr<DevtoolsDurableMessageWriter>
 NetworkService::MaybeCreateDurableMessageWriter(
     const base::UnguessableToken& throttling_profile_id,

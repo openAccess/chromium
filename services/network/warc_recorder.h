@@ -276,6 +276,25 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
               const std::string& filename,
               base::OnceClosure on_previous_file_complete);
 
+  // Receives the file a rotation should continue into, and the name to record
+  // in its warcinfo. An invalid file declines, which stops recording.
+  using NextFileCallback =
+      base::OnceCallback<void(base::File file, const std::string& filename)>;
+
+  // Rotates on its own once the file being written passes `max_file_bytes`,
+  // asking `request_next_file` for each new file. Zero disables it, which is
+  // the default: a session then records into the single file it was given.
+  //
+  // The threshold is soft, and cannot be otherwise. The size is read between
+  // exchanges, the count it reads lags what is queued, and obtaining a file
+  // means a round trip to the browser -- so a file passes the threshold and
+  // keeps growing until the answer comes back. Records are never split or held
+  // to make a file land on a boundary, because a WARC's value is that it is
+  // complete, not that it is a particular size.
+  void SetRotationPolicy(
+      uint64_t max_file_bytes,
+      base::RepeatingCallback<void(NextFileCallback)> request_next_file);
+
   warc::WarcWriter& writer_for_testing() { return *writer_; }
 
  private:
@@ -291,6 +310,23 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // within the current file. Rotation clears them, since the records they name
   // stay behind in the file being closed.
   std::map<std::string, std::string> context_warcinfo_ids_;
+
+  // Asks for a new file if the current one has grown past the threshold.
+  // Called where exchanges begin, which is the natural point at which no record
+  // is part-written and the network sequence is already here.
+  void MaybeRotate();
+
+  // Continues into the file the request came back with, or stops if it
+  // declined.
+  void OnNextFile(base::File file, const std::string& filename);
+
+  uint64_t max_file_bytes_ = 0;
+  base::RepeatingCallback<void(NextFileCallback)> request_next_file_;
+
+  // Set while a request for the next file is outstanding. Without it the
+  // threshold would be crossed on every exchange until the answer arrived, and
+  // each one would ask again.
+  bool awaiting_next_file_ = false;
 
   // Resolves, on demand, the warcinfo id describing `browsing_context`.
   base::RepeatingCallback<std::string()> WarcinfoResolver(

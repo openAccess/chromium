@@ -108,6 +108,16 @@ class WarcWriter {
       uint64_t body_size,
       base::OnceCallback<void(base::File)> on_written);
 
+  // Bytes written to the file currently being recorded, as they land on disk --
+  // so compressed bytes where the archive is gzipped, which is what a size
+  // threshold on the resulting file has to be measured against.
+  //
+  // Reset by Rotate(), since the count describes one file and not the session.
+  // It is published at the end of each drain, so it lags what has been queued;
+  // a threshold read from it is therefore a floor rather than a ceiling, and a
+  // file overshoots by whatever was in flight.
+  uint64_t bytes_written() const;
+
   // Number of records dropped so far because the queue was over budget.
   uint64_t dropped_records() const;
 

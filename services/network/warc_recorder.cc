@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -458,8 +460,41 @@ WarcRecorder::~WarcRecorder() {
   }
 }
 
+void WarcRecorder::SetRotationPolicy(
+    uint64_t max_file_bytes,
+    base::RepeatingCallback<void(NextFileCallback)> request_next_file) {
+  max_file_bytes_ = max_file_bytes;
+  request_next_file_ = std::move(request_next_file);
+}
+
+void WarcRecorder::MaybeRotate() {
+  if (max_file_bytes_ == 0 || awaiting_next_file_ || !request_next_file_) {
+    return;
+  }
+  if (writer_->bytes_written() < max_file_bytes_) {
+    return;
+  }
+
+  awaiting_next_file_ = true;
+  request_next_file_.Run(
+      base::BindOnce(&WarcRecorder::OnNextFile, weak_factory_.GetWeakPtr()));
+}
+
+void WarcRecorder::OnNextFile(base::File file, const std::string& filename) {
+  awaiting_next_file_ = false;
+  if (!file.IsValid()) {
+    LOG(ERROR) << "WARC recording stopped: no further file was provided to "
+                  "rotate into, so later requests will not be archived.";
+  }
+  // Nothing waits on the closed file here. Whoever provided the replacement is
+  // the one who knows what to do with the one before it, and it says so by
+  // replying to its own request.
+  Rotate(std::move(file), filename, base::DoNothing());
+}
+
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder(
     const std::string& browsing_context) {
+  MaybeRotate();
   return std::make_unique<WarcExchangeRecorder>(
       writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
       WarcinfoResolver(browsing_context), redact_credentials_);
@@ -467,6 +502,7 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder(
 
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder(
     const std::string& browsing_context) {
+  MaybeRotate();
   auto recorder = std::make_unique<WarcExchangeRecorder>(
       writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
       WarcinfoResolver(browsing_context), redact_credentials_);

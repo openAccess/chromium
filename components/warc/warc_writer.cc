@@ -161,6 +161,18 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
     return ++last_id_;
   }
 
+  // Published by the file sequence at the end of each drain, read by whoever
+  // is deciding whether the file has grown enough to rotate.
+  void SetBytesWritten(uint64_t bytes) {
+    base::AutoLock auto_lock(lock_);
+    bytes_written_ = bytes;
+  }
+
+  uint64_t bytes_written() const {
+    base::AutoLock auto_lock(lock_);
+    return bytes_written_;
+  }
+
   uint64_t dropped_records() const {
     base::AutoLock auto_lock(lock_);
     return dropped_records_;
@@ -179,6 +191,7 @@ class WarcWriter::WriteQueue : public base::RefCountedThreadSafe<WriteQueue> {
   base::circular_deque<QueuedRecord> records_ GUARDED_BY(lock_);
   size_t queued_bytes_ GUARDED_BY(lock_) = 0;
   uint64_t dropped_records_ GUARDED_BY(lock_) = 0;
+  uint64_t bytes_written_ GUARDED_BY(lock_) = 0;
   bool flush_pending_ GUARDED_BY(lock_) = false;
   uint64_t last_id_ GUARDED_BY(lock_) = 0;
 
@@ -223,6 +236,10 @@ class WarcWriter::FileWriter {
       // A closed archive still drains the queue, so every spill comes back.
       std::ignore = wrote;
     }
+    // Published once per drain rather than once per record: the reader of this
+    // is a size threshold, which cares about the order of magnitude and not the
+    // exact byte.
+    queue->SetBytesWritten(bytes_written_);
   }
 
   // Installs `file` as the archive and closes the one it replaces.
@@ -241,6 +258,8 @@ class WarcWriter::FileWriter {
       file_.Flush();
     }
     file_ = std::move(file);
+    // The count describes a file, so it starts again with the new one.
+    bytes_written_ = 0;
   }
 
   // Writes one record, compressing it into a member of its own where the
@@ -338,12 +357,17 @@ class WarcWriter::FileWriter {
         file_.Close();
         return false;
       }
+      bytes_written_ += *written;
       data = data.subspan(*written);
     }
     return true;
   }
 
   base::File file_;
+  // Bytes this writer has put into the current file. Every byte reaching the
+  // archive passes through WriteAll(), gzipped output included, since that is
+  // the sink the member writer is given.
+  uint64_t bytes_written_ = 0;
   const Compression compression_;
 };
 
@@ -378,6 +402,11 @@ bool WarcWriter::AddRecord(std::vector<uint8_t> record) {
 void WarcWriter::Rotate(base::File file) {
   QueuedRecord rotation;
   rotation.rotate_to = std::move(file);
+
+  // Published before the rotation is even drained. The count is what a size
+  // threshold reads, and leaving the closed file's size visible would have it
+  // ask to rotate again immediately, every time, until the drain caught up.
+  queue_->SetBytesWritten(0);
 
   bool should_post_flush = false;
   queue_->AddRotation(std::move(rotation), &should_post_flush);
@@ -453,6 +482,10 @@ bool WarcWriter::Enqueue(QueuedRecord record) {
                        queue_));
   }
   return true;
+}
+
+uint64_t WarcWriter::bytes_written() const {
+  return queue_->bytes_written();
 }
 
 uint64_t WarcWriter::dropped_records() const {
