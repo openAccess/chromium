@@ -40,12 +40,18 @@ static_library("replay") {
   sources = [
     "wacz_collection.cc",
     "wacz_collection.h",
+    "wacz_url_loader_factory.cc",
+    "wacz_url_loader_factory.h",
   ]
 
   deps = [
     ":warc",
     "//base",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
     "//net",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
     "//url",
   ]
 }
@@ -72,6 +78,7 @@ source_set("unit_tests") {
     "surt_unittest.cc",
     "wacz_collection_unittest.cc",
     "wacz_reader_unittest.cc",
+    "wacz_url_loader_factory_unittest.cc",
     "warc_record_parser_unittest.cc",
     "warc_record_unittest.cc",
     "warc_writer_unittest.cc",
@@ -83,7 +90,12 @@ source_set("unit_tests") {
     ":warc",
     "//base",
     "//base/test:test_support",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
     "//net",
+    "//services/network:test_support",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
     "//testing/gtest",
     "//third_party/zlib/google:zip",
   ]

@@ -4,6 +4,7 @@
 
 #include "components/warc/wacz_collection.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/json/json_reader.h"
@@ -176,6 +177,16 @@ std::optional<WaczCollection> WaczCollection::Open(base::File file) {
   WaczCollection collection;
   collection.pages_ = ReadPages(*reader);
   collection.index_ = std::move(*index);
+
+  // A lookup searches the index, so the index has to be sorted. It is supposed
+  // to arrive that way and usually does, but an index assembled from blocks or
+  // appended to by a crawler need not be, and an unsorted one does not fail --
+  // it silently fails to find records the archive holds, which is the worst
+  // way for an archive to be wrong. Sorting it once at open costs nothing
+  // beside reading it.
+  std::stable_sort(
+      collection.index_.begin(), collection.index_.end(),
+      [](const CdxjEntry& a, const CdxjEntry& b) { return a.key < b.key; });
   collection.reader_ = std::move(reader);
 
   // The index names an archive by its own name; the container holds it under

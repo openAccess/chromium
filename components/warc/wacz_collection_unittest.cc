@@ -262,6 +262,28 @@ TEST_F(WaczCollectionTest, APagesTimeIsAcceptedAsWrittenInThePageList) {
   EXPECT_EQ("20260601000000", ToIndexTimestamp("20260601000000"));
 }
 
+TEST_F(WaczCollectionTest, AnIndexOutOfOrderIsStillSearchable) {
+  // A lookup searches the index, so an index that is not sorted does not fail
+  // -- it quietly fails to find records the archive holds. These are added in
+  // an order that puts the keys the wrong way round.
+  AddResponse("https://example.org/old", "20260101120000",
+              "HTTP/1.1 200 OK\r\n\r\n", "older");
+  AddResponse("https://example.org/new", "20260101120000",
+              "HTTP/1.1 200 OK\r\n\r\n", "newer");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+
+  EXPECT_EQ("older", ToString(collection
+                                  ->Lookup(GURL("https://example.org/old"),
+                                           "20260101120000")
+                                  ->body));
+  EXPECT_EQ("newer", ToString(collection
+                                  ->Lookup(GURL("https://example.org/new"),
+                                           "20260101120000")
+                                  ->body));
+}
+
 TEST_F(WaczCollectionTest, AContainerWithNoIndexCannotBeServed) {
   AddResponse("https://example.org/p", "20260101120000",
               "HTTP/1.1 200 OK\r\n\r\n", "body");
