@@ -4,6 +4,8 @@
 
 static_library("warc") {
   sources = [
+    "cdxj.cc",
+    "cdxj.h",
     "gzip_member_reader.cc",
     "gzip_member_reader.h",
     "gzip_member_writer.cc",
@@ -46,6 +48,7 @@ source_set("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "cdxj_unittest.cc",
     "gzip_member_reader_unittest.cc",
     "gzip_member_writer_unittest.cc",
     "surt_unittest.cc",
