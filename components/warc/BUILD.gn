@@ -34,6 +34,22 @@ static_library("warc") {
   ]
 }
 
+# Serving an archive rather than writing one. Kept apart from the format
+# library so that capturing does not drag in what only replay needs.
+static_library("replay") {
+  sources = [
+    "wacz_collection.cc",
+    "wacz_collection.h",
+  ]
+
+  deps = [
+    ":warc",
+    "//base",
+    "//net",
+    "//url",
+  ]
+}
+
 source_set("test_support") {
   testonly = true
   sources = [
@@ -54,6 +70,7 @@ source_set("unit_tests") {
     "gzip_member_reader_unittest.cc",
     "gzip_member_writer_unittest.cc",
     "surt_unittest.cc",
+    "wacz_collection_unittest.cc",
     "wacz_reader_unittest.cc",
     "warc_record_parser_unittest.cc",
     "warc_record_unittest.cc",
@@ -61,10 +78,12 @@ source_set("unit_tests") {
   ]
 
   deps = [
+    ":replay",
     ":test_support",
     ":warc",
     "//base",
     "//base/test:test_support",
+    "//net",
     "//testing/gtest",
     "//third_party/zlib/google:zip",
   ]
