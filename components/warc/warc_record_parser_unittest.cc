@@ -116,8 +116,8 @@ TEST(WarcRecordParserTest, BlockMayHoldArbitraryBinaryContent) {
 
   std::optional<ParsedRecord> record = ParseRecord(serialized);
   ASSERT_TRUE(record.has_value());
-  EXPECT_EQ(block, std::vector<uint8_t>(record->block.begin(),
-                                        record->block.end()));
+  EXPECT_EQ(block,
+            std::vector<uint8_t>(record->block.begin(), record->block.end()));
   EXPECT_EQ(serialized.size(), record->size);
 }
 
@@ -142,9 +142,8 @@ TEST(WarcRecordParserTest, ShortInputIsIncompleteRatherThanBroken) {
   for (size_t keep = 1; keep < serialized.size(); ++keep) {
     SCOPED_TRACE(keep);
     bool incomplete = false;
-    EXPECT_FALSE(
-        ParseRecord(base::span(serialized).first(keep), &incomplete)
-            .has_value());
+    EXPECT_FALSE(ParseRecord(base::span(serialized).first(keep), &incomplete)
+                     .has_value());
     EXPECT_TRUE(incomplete);
   }
 }
@@ -155,12 +154,15 @@ TEST(WarcRecordParserTest, RefusesWhatIsNotARecord) {
     std::string data;
   } const cases[] = {
       {"not a warc record at all", "GET / HTTP/1.1\r\n\r\n"},
-      {"no content length", "WARC/1.1\r\nWARC-Type: response\r\n\r\nbody\r\n\r\n"},
+      {"no content length",
+       "WARC/1.1\r\nWARC-Type: response\r\n\r\nbody\r\n\r\n"},
       {"unparseable content length",
        "WARC/1.1\r\nContent-Length: soon\r\n\r\n\r\n\r\n"},
-      {"field without a colon", "WARC/1.1\r\nnonsense\r\nContent-Length: 0\r\n\r\n\r\n\r\n"},
+      {"field without a colon",
+       "WARC/1.1\r\nnonsense\r\nContent-Length: 0\r\n\r\n\r\n\r\n"},
       {"folded field",
-       "WARC/1.1\r\nWARC-Type: response\r\n  folded\r\nContent-Length: 0\r\n\r\n\r\n\r\n"},
+       "WARC/1.1\r\nWARC-Type: response\r\n  folded\r\nContent-Length: "
+       "0\r\n\r\n\r\n\r\n"},
   };
   for (const auto& test : cases) {
     SCOPED_TRACE(test.name);

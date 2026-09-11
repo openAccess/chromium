@@ -8,6 +8,8 @@ static_library("warc") {
     "gzip_member_reader.h",
     "gzip_member_writer.cc",
     "gzip_member_writer.h",
+    "surt.cc",
+    "surt.h",
     "warc_body_spill.cc",
     "warc_body_spill.h",
     "warc_record.cc",
@@ -24,6 +26,7 @@ static_library("warc") {
     "//crypto",
     "//third_party/zlib",
     "//third_party/zlib/google:compression_utils",
+    "//url",
   ]
 }
 
@@ -45,6 +48,7 @@ source_set("unit_tests") {
   sources = [
     "gzip_member_reader_unittest.cc",
     "gzip_member_writer_unittest.cc",
+    "surt_unittest.cc",
     "warc_record_parser_unittest.cc",
     "warc_record_unittest.cc",
     "warc_writer_unittest.cc",

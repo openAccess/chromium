@@ -79,8 +79,8 @@ TEST(GzipMemberReaderTest, StopsAtTheMemberBoundary) {
   EXPECT_EQ(first_size, compressed_size);
 
   // And the size it reported is exactly where the next one starts.
-  std::optional<std::vector<uint8_t>> next = InflateGzipMember(
-      base::span(archive).subspan(compressed_size), nullptr);
+  std::optional<std::vector<uint8_t>> next =
+      InflateGzipMember(base::span(archive).subspan(compressed_size), nullptr);
   ASSERT_TRUE(next.has_value());
   EXPECT_EQ("second", ToString(*next));
 }
