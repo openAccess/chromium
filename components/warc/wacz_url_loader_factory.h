@@ -7,12 +7,13 @@
 
 #include <string>
 
-#include "base/files/file.h"
+#include "base/files/file_path.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/sequence_bound.h"
 #include "components/warc/wacz_collection.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/cpp/self_deleting_url_loader_factory.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 
@@ -39,7 +40,10 @@ namespace warc {
 // here and is asked across sequences.
 class WaczArchiveSource {
  public:
-  explicit WaczArchiveSource(base::File archive);
+  // Opens `path` here, on this sequence, rather than being handed a file
+  // opened on the caller's: opening blocks too, and a caller that may not
+  // block should not have to find somewhere that may just to hand one over.
+  explicit WaczArchiveSource(base::FilePath path);
 
   WaczArchiveSource(const WaczArchiveSource&) = delete;
   WaczArchiveSource& operator=(const WaczArchiveSource&) = delete;
@@ -64,7 +68,7 @@ class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
  public:
   // Serves `archive` as it stood at `timestamp`, which may be written either
   // way a WACZ writes one.
-  static scoped_refptr<WaczArchive> Open(base::File archive,
+  static scoped_refptr<WaczArchive> Open(base::FilePath path,
                                          const std::string& timestamp);
 
   WaczArchive(const WaczArchive&) = delete;
@@ -74,13 +78,27 @@ class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
   // that frame asks for comes from here.
   mojo::PendingRemote<network::mojom::URLLoaderFactory> CreateFactory();
 
+  // As above, for a caller that already has a receiver to fill -- which is
+  // what a request interception hook hands over.
+  //
+  // `passthrough` receives the requests this archive has no business
+  // answering. An archive holds what a page fetched over the web, so http and
+  // https requests are answered from it and never go anywhere else; but a
+  // browser also asks for its own furniture -- chrome:// pages, the theme it
+  // draws itself with -- and those have nothing to do with the archive and
+  // would be broken by being refused. May be empty, in which case anything
+  // not answered here fails.
+  void BindFactory(
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+      mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough);
+
   base::SequenceBound<WaczArchiveSource>& source() { return source_; }
   const std::string& timestamp() const { return timestamp_; }
 
  private:
   friend class base::RefCountedThreadSafe<WaczArchive>;
 
-  WaczArchive(base::File archive, const std::string& timestamp);
+  WaczArchive(base::FilePath path, const std::string& timestamp);
   ~WaczArchive();
 
   base::SequenceBound<WaczArchiveSource> source_;
@@ -94,6 +112,7 @@ class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
   // being done by hand.
   WaczUrlLoaderFactory(
       scoped_refptr<WaczArchive> archive,
+      mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
       base::SelfDeletingPassKey key);
 
@@ -117,6 +136,9 @@ class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
   // Held, not owned: several factories may serve one archive, and the archive
   // outlives any of them.
   const scoped_refptr<WaczArchive> archive_;
+
+  // Where a request the archive has no business answering goes instead.
+  mojo::Remote<network::mojom::URLLoaderFactory> passthrough_;
 };
 
 }  // namespace warc

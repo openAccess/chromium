@@ -89,9 +89,7 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
     const base::FilePath path = temp_dir_.GetPath().AppendASCII("c.wacz");
     EXPECT_TRUE(zip::Zip(content, path, /*include_hidden_files=*/false));
 
-    open_archive_ = WaczArchive::Open(
-        base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ),
-        kTimestamp);
+    open_archive_ = WaczArchive::Open(path, kTimestamp);
     return mojo::Remote<network::mojom::URLLoaderFactory>(
         open_archive_->CreateFactory());
   }
@@ -348,9 +346,7 @@ TEST_F(WaczUrlLoaderFactoryTest, HeadersThatWouldOutliveTheVisitAreDropped) {
 TEST_F(WaczUrlLoaderFactoryTest, AnUnreadableArchiveServesNothing) {
   const base::FilePath path = temp_dir_.GetPath().AppendASCII("not.wacz");
   ASSERT_TRUE(base::WriteFile(path, "this is not a container"));
-  scoped_refptr<WaczArchive> archive = WaczArchive::Open(
-      base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ),
-      kTimestamp);
+  scoped_refptr<WaczArchive> archive = WaczArchive::Open(path, kTimestamp);
   mojo::Remote<network::mojom::URLLoaderFactory> factory(
       archive->CreateFactory());
 

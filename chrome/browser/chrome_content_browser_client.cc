@@ -586,6 +586,7 @@
 #include "chrome/browser/ui/waap/waap_utils.h"
 #include "chrome/browser/ui/webui/chrome_content_browser_client_webui_part.h"
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
+#include "chrome/browser/wacz_replay.h"
 #include "chrome/browser/web_applications/isolated_web_apps/chrome_content_browser_client_isolated_web_apps_part.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_error_page.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
@@ -6606,6 +6607,18 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
     network::mojom::URLLoaderFactoryOverridePtr* factory_override,
     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
     bool is_for_network_service) {
+  // A browser replaying an archive answers every request out of it -- the
+  // document, and the subresources the document goes on to ask for. Taking
+  // the whole factory rather than interposing on it is what leaves the
+  // archived site its own URLs and its own origin, so nothing has to rewrite
+  // its links; and it is what leaves nothing to fall through to, so a
+  // resource the archive lacks is missing rather than quietly fetched.
+  if (wacz_replay::IsEnabled()) {
+    auto [receiver, passthrough] = factory_builder.Append();
+    wacz_replay::BindFactory(std::move(receiver), std::move(passthrough));
+    return;
+  }
+
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   auto* web_request_api =
       extensions::BrowserContextKeyedAPIFactory<extensions::WebRequestAPI>::Get(

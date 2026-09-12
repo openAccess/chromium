@@ -21,6 +21,12 @@
 
 namespace switches {
 
+// Replays the WACZ at this path instead of browsing the web: every request
+// every frame makes is answered out of the archive, and nothing falls through
+// to the network. Applies to the whole browser rather than to a tab, so give
+// it a --user-data-dir of its own.
+inline constexpr char kWaczReplay[] = "wacz-replay";
+
 // -----------------------------------------------------------------------------
 // Can't find the switch you are looking for? Try looking in
 // media/base/media_switches.cc or ui/gl/gl_switches.cc or one of the

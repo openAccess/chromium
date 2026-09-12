@@ -875,6 +875,8 @@ source_set("core") {
     "unexpire_flags.cc",
     "unexpire_flags.h",
     "universal_web_contents_observers.cc",
+    "wacz_replay.cc",
+    "wacz_replay.h",
     "warc_page_recorder.cc",
     "warc_page_recorder.h",
   ]
@@ -1252,6 +1254,7 @@ source_set("core") {
     "//components/update_client:network_impl",
     "//components/variations/service",
     "//components/visited_url_ranking/public",
+    "//components/warc:replay",
     "//components/web_resource",
     "//components/webui/chrome_urls",
     "//device/base",

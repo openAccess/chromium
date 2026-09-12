@@ -7,7 +7,9 @@
 #include <utility>
 
 #include "base/byte_size.h"
+#include "base/files/file.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
@@ -191,8 +193,14 @@ class WaczUrlLoader : public network::mojom::URLLoader {
 
 }  // namespace
 
-WaczArchiveSource::WaczArchiveSource(base::File archive)
-    : collection_(WaczCollection::Open(std::move(archive))) {}
+WaczArchiveSource::WaczArchiveSource(base::FilePath path)
+    : collection_(WaczCollection::Open(
+          base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ))) {
+  if (!collection_) {
+    LOG(ERROR) << "Cannot replay from " << path.value()
+               << ": not a readable WACZ. Every request will miss.";
+  }
+}
 
 WaczArchiveSource::~WaczArchiveSource() = default;
 
@@ -206,16 +214,16 @@ std::optional<ArchivedResponse> WaczArchiveSource::Lookup(
 }
 
 // static
-scoped_refptr<WaczArchive> WaczArchive::Open(base::File archive,
+scoped_refptr<WaczArchive> WaczArchive::Open(base::FilePath path,
                                              const std::string& timestamp) {
-  return base::WrapRefCounted(new WaczArchive(std::move(archive), timestamp));
+  return base::WrapRefCounted(new WaczArchive(std::move(path), timestamp));
 }
 
-WaczArchive::WaczArchive(base::File archive, const std::string& timestamp)
+WaczArchive::WaczArchive(base::FilePath path, const std::string& timestamp)
     : source_(base::ThreadPool::CreateSequencedTaskRunner(
                   {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
                    base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
-              std::move(archive)),
+              std::move(path)),
       timestamp_(timestamp) {}
 
 WaczArchive::~WaczArchive() = default;
@@ -223,19 +231,27 @@ WaczArchive::~WaczArchive() = default;
 mojo::PendingRemote<network::mojom::URLLoaderFactory>
 WaczArchive::CreateFactory() {
   mojo::PendingRemote<network::mojom::URLLoaderFactory> pending_remote;
+  BindFactory(pending_remote.InitWithNewPipeAndPassReceiver(),
+              mojo::NullRemote());
+  return pending_remote;
+}
+
+void WaczArchive::BindFactory(
+    mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
+    mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough) {
   // Deletes itself once nothing holds a receiver, as its base class arranges.
   base::MakeSelfDeleting<WaczUrlLoaderFactory>(
-      base::WrapRefCounted(this),
-      pending_remote.InitWithNewPipeAndPassReceiver());
-  return pending_remote;
+      base::WrapRefCounted(this), std::move(passthrough), std::move(receiver));
 }
 
 WaczUrlLoaderFactory::WaczUrlLoaderFactory(
     scoped_refptr<WaczArchive> archive,
+    mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     base::SelfDeletingPassKey key)
     : network::SelfDeletingURLLoaderFactory(std::move(receiver), key),
-      archive_(std::move(archive)) {}
+      archive_(std::move(archive)),
+      passthrough_(std::move(passthrough)) {}
 
 WaczUrlLoaderFactory::~WaczUrlLoaderFactory() = default;
 
@@ -246,6 +262,23 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
     const network::ResourceRequest& request,
     mojo::PendingRemote<network::mojom::URLLoaderClient> client,
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
+  // An archive holds what a page fetched over the web. A browser asks for
+  // other things too -- its own chrome:// pages, the theme it draws itself
+  // with -- and those are no part of any capture. Refusing them does not make
+  // replay any more faithful; it just breaks the browser around the archive.
+  if (!request.url.SchemeIsHTTPOrHTTPS()) {
+    if (passthrough_) {
+      passthrough_->CreateLoaderAndStart(std::move(loader), request_id, options,
+                                         request, std::move(client),
+                                         traffic_annotation);
+      return;
+    }
+    mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+        ->OnComplete(
+            network::URLLoaderCompletionStatus(net::ERR_FILE_NOT_FOUND));
+    return;
+  }
+
   auto* url_loader = new WaczUrlLoader(std::move(loader), std::move(client));
 
   // A document that is missing needs somewhere to say so; a subresource does
