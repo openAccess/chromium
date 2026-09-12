@@ -6,11 +6,13 @@
 
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/escape.h"
+#include "base/strings/strcat.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "base/byte_size.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -18,9 +20,11 @@
 #include "mojo/public/cpp/system/data_pipe_producer.h"
 #include "mojo/public/cpp/system/string_data_source.h"
 #include "net/base/net_errors.h"
+#include "net/http/http_util.h"
 #include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 
@@ -31,6 +35,27 @@ namespace {
 // Enough for a page or a script in one go; a larger body is written in pieces
 // as the renderer consumes it.
 constexpr uint32_t kDataPipeCapacity = 64 * 1024;
+
+// What a navigation to something the archive does not hold arrives at.
+//
+// A subresource that is missing should look missing -- a broken image is
+// exactly the right impression. A document that is missing has nowhere to
+// show that, and an empty error page leaves a visitor guessing whether the
+// archive is broken, the URL is wrong, or replay has failed. So a navigation
+// gets a page that says which URL was asked for and that this archive does
+// not contain it.
+std::string MissingPageBody(const GURL& url) {
+  return base::StrCat({
+      "<!doctype html><meta charset=\"utf-8\">"
+      "<title>Not in this archive</title>"
+      "<body style=\"font:14px system-ui;margin:3em;max-width:40em\">"
+      "<h1>Not in this archive</h1><p>This capture does not contain</p>"
+      "<p><code>",
+      base::EscapeForHTML(url.spec()),
+      "</code></p><p>Nothing was fetched from the network to find out. An "
+      "archive holds what was captured and no more.</p>",
+  });
+}
 
 // Serves one request, then deletes itself.
 //
@@ -55,12 +80,21 @@ class WaczUrlLoader : public network::mojom::URLLoader {
     return weak_factory_.GetWeakPtr();
   }
 
+  // Remembers what to say if the archive has nothing.
+  void set_missing_page(std::optional<GURL> url) {
+    missing_page_for_ = std::move(url);
+  }
+
   // What the archive had to say.
   void Serve(std::optional<ArchivedResponse> response) {
     if (!response) {
       // Nothing else to offer, and nowhere else to look. Saying so is the
       // point: a resource the archive lacks must be seen to be missing.
-      Fail(net::ERR_FILE_NOT_FOUND);
+      if (missing_page_for_) {
+        ServeMissingPage(*missing_page_for_);
+      } else {
+        Fail(net::ERR_FILE_NOT_FOUND);
+      }
       return;
     }
 
@@ -93,12 +127,11 @@ class WaczUrlLoader : public network::mojom::URLLoader {
     // response larger than the pipe cannot be handed over in one piece.
     body_ = std::string(response->body.begin(), response->body.end());
     producer_ = std::make_unique<mojo::DataPipeProducer>(std::move(producer));
-    producer_->Write(
-        std::make_unique<mojo::StringDataSource>(
-            body_, mojo::StringDataSource::AsyncWritingMode::
-                       STRING_STAYS_VALID_UNTIL_COMPLETION),
-        base::BindOnce(&WaczUrlLoader::OnBodyWritten,
-                       weak_factory_.GetWeakPtr()));
+    producer_->Write(std::make_unique<mojo::StringDataSource>(
+                         body_, mojo::StringDataSource::AsyncWritingMode::
+                                    STRING_STAYS_VALID_UNTIL_COMPLETION),
+                     base::BindOnce(&WaczUrlLoader::OnBodyWritten,
+                                    weak_factory_.GetWeakPtr()));
   }
 
   // network::mojom::URLLoader:
@@ -114,6 +147,18 @@ class WaczUrlLoader : public network::mojom::URLLoader {
                    int32_t intra_priority_value) override {}
 
  private:
+  void ServeMissingPage(const GURL& url) {
+    ArchivedResponse response;
+    response.headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+        net::HttpUtil::AssembleRawHeaders(
+            "HTTP/1.1 404 Not Found\r\n"
+            "Content-Type: text/html; charset=utf-8\r\n\r\n"));
+    const std::string body = MissingPageBody(url);
+    response.body.assign(body.begin(), body.end());
+    missing_page_for_.reset();
+    Serve(std::move(response));
+  }
+
   void OnBodyWritten(MojoResult result) {
     if (result != MOJO_RESULT_OK) {
       Fail(net::ERR_FAILED);
@@ -136,6 +181,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
   mojo::Receiver<network::mojom::URLLoader> receiver_;
   mojo::Remote<network::mojom::URLLoaderClient> client_;
 
+  std::optional<GURL> missing_page_for_;
   std::string body_;
   size_t body_size_ = 0;
   std::unique_ptr<mojo::DataPipeProducer> producer_;
@@ -160,28 +206,36 @@ std::optional<ArchivedResponse> WaczArchiveSource::Lookup(
 }
 
 // static
+scoped_refptr<WaczArchive> WaczArchive::Open(base::File archive,
+                                             const std::string& timestamp) {
+  return base::WrapRefCounted(new WaczArchive(std::move(archive), timestamp));
+}
+
+WaczArchive::WaczArchive(base::File archive, const std::string& timestamp)
+    : source_(base::ThreadPool::CreateSequencedTaskRunner(
+                  {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
+                   base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
+              std::move(archive)),
+      timestamp_(timestamp) {}
+
+WaczArchive::~WaczArchive() = default;
+
 mojo::PendingRemote<network::mojom::URLLoaderFactory>
-WaczUrlLoaderFactory::Create(base::File archive,
-                             const std::string& timestamp) {
+WaczArchive::CreateFactory() {
   mojo::PendingRemote<network::mojom::URLLoaderFactory> pending_remote;
   // Deletes itself once nothing holds a receiver, as its base class arranges.
   base::MakeSelfDeleting<WaczUrlLoaderFactory>(
-      std::move(archive), timestamp,
+      base::WrapRefCounted(this),
       pending_remote.InitWithNewPipeAndPassReceiver());
   return pending_remote;
 }
 
 WaczUrlLoaderFactory::WaczUrlLoaderFactory(
-    base::File archive,
-    const std::string& timestamp,
+    scoped_refptr<WaczArchive> archive,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     base::SelfDeletingPassKey key)
     : network::SelfDeletingURLLoaderFactory(std::move(receiver), key),
-      archive_(base::ThreadPool::CreateSequencedTaskRunner(
-                   {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
-                    base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
-               std::move(archive)),
-      timestamp_(timestamp) {}
+      archive_(std::move(archive)) {}
 
 WaczUrlLoaderFactory::~WaczUrlLoaderFactory() = default;
 
@@ -194,6 +248,12 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
   auto* url_loader = new WaczUrlLoader(std::move(loader), std::move(client));
 
+  // A document that is missing needs somewhere to say so; a subresource does
+  // not, and should simply be missing.
+  if (request.destination == network::mojom::RequestDestination::kDocument) {
+    url_loader->set_missing_page(request.url);
+  }
+
   // Only what an archive can answer. A capture records what the browser was
   // given in reply to a request it made; there is no reply stored for a
   // request nobody made.
@@ -202,8 +262,9 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
     return;
   }
 
-  archive_.AsyncCall(&WaczArchiveSource::Lookup)
-      .WithArgs(request.url, timestamp_)
+  archive_->source()
+      .AsyncCall(&WaczArchiveSource::Lookup)
+      .WithArgs(request.url, archive_->timestamp())
       .Then(base::BindOnce(&WaczUrlLoader::Serve, url_loader->AsWeakPtr()));
 }
 

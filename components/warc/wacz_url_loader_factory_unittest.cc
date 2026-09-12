@@ -13,6 +13,8 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
@@ -21,7 +23,6 @@
 #include "components/warc/surt.h"
 #include "components/warc/warc_record.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "base/run_loop.h"
 #include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_request_headers.h"
@@ -66,12 +67,11 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
     const std::vector<uint8_t> member = AsMember(
         SerializeRecord(header, block, head.size(), DigestAlgorithm::kSha1));
 
-    index_ += base::StrCat({ToSurt(GURL(std::string(url))), " ", kTimestamp,
-                            " {\"url\": \"", url, "\", \"length\": \"",
-                            base::NumberToString(member.size()),
-                            "\", \"offset\": \"",
-                            base::NumberToString(archive_.size()),
-                            "\", \"filename\": \"t.warc.gz\"}\n"});
+    index_ += base::StrCat(
+        {ToSurt(GURL(std::string(url))), " ", kTimestamp, " {\"url\": \"", url,
+         "\", \"length\": \"", base::NumberToString(member.size()),
+         "\", \"offset\": \"", base::NumberToString(archive_.size()),
+         "\", \"filename\": \"t.warc.gz\"}\n"});
     archive_.insert(archive_.end(), member.begin(), member.end());
   }
 
@@ -89,11 +89,11 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
     const base::FilePath path = temp_dir_.GetPath().AppendASCII("c.wacz");
     EXPECT_TRUE(zip::Zip(content, path, /*include_hidden_files=*/false));
 
-    mojo::Remote<network::mojom::URLLoaderFactory> factory(
-        WaczUrlLoaderFactory::Create(
-            base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ),
-            kTimestamp));
-    return factory;
+    open_archive_ = WaczArchive::Open(
+        base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ),
+        kTimestamp);
+    return mojo::Remote<network::mojom::URLLoaderFactory>(
+        open_archive_->CreateFactory());
   }
 
   // Issues `url` through `factory`. The loader is kept alive for as long as
@@ -160,6 +160,7 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
   }
 
   mojo::PendingRemote<network::mojom::URLLoader> loader_;
+  scoped_refptr<WaczArchive> open_archive_;
 
   static constexpr char kTimestamp[] = "20260101120000";
 
@@ -177,7 +178,8 @@ TEST_F(WaczUrlLoaderFactoryTest, ServesAnArchivedPage) {
   mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
 
   network::TestURLLoaderClient client;
-  const std::string body = FetchBody(factory, "https://example.org/page", &client);
+  const std::string body =
+      FetchBody(factory, "https://example.org/page", &client);
 
   EXPECT_EQ(net::OK, client.completion_status().error_code);
   ASSERT_TRUE(client.response_head());
@@ -201,7 +203,8 @@ TEST_F(WaczUrlLoaderFactoryTest, ServesABodyLargerThanThePipe) {
   mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
 
   network::TestURLLoaderClient client;
-  const std::string body = FetchBody(factory, "https://example.org/big", &client);
+  const std::string body =
+      FetchBody(factory, "https://example.org/big", &client);
 
   EXPECT_EQ(net::OK, client.completion_status().error_code);
   EXPECT_EQ(big.size(), body.size());
@@ -227,8 +230,8 @@ TEST_F(WaczUrlLoaderFactoryTest, ServesTheSamePageHoweverTheUrlIsWritten) {
   mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
 
   network::TestURLLoaderClient client;
-  EXPECT_EQ("body",
-            FetchBody(factory, "http://www.example.org/a/?a=1&b=2#frag", &client));
+  EXPECT_EQ("body", FetchBody(factory, "http://www.example.org/a/?a=1&b=2#frag",
+                              &client));
   EXPECT_EQ(net::OK, client.completion_status().error_code);
 }
 
@@ -263,13 +266,93 @@ TEST_F(WaczUrlLoaderFactoryTest, AnArchivedRedirectIsServedAsARedirect) {
             client.response_head()->headers->GetNormalizedHeader("Location"));
 }
 
+TEST_F(WaczUrlLoaderFactoryTest, ANavigationMissLandsOnAPageSayingSo) {
+  AddResponse("https://example.org/have", "HTTP/1.1 200 OK\r\n\r\n", "body");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  network::ResourceRequest request;
+  request.url = GURL("https://example.org/gone");
+  request.method = "GET";
+  request.destination = network::mojom::RequestDestination::kDocument;
+  factory->CreateLoaderAndStart(loader_.InitWithNewPipeAndPassReceiver(),
+                                /*request_id=*/1,
+                                /*options=*/0, request, client.CreateRemote(),
+                                net::MutableNetworkTrafficAnnotationTag());
+
+  client.RunUntilResponseReceived();
+  ASSERT_TRUE(client.response_head());
+  // A document has nowhere to show a failure, so it gets a page that says
+  // which URL the archive lacks rather than an empty error.
+  EXPECT_EQ(404, client.response_head()->headers->response_code());
+  EXPECT_EQ("text/html", client.response_head()->mime_type);
+
+  std::string body;
+  base::RunLoop loop;
+  class Drain : public mojo::DataPipeDrainer::Client {
+   public:
+    Drain(std::string* out, base::OnceClosure done)
+        : out_(out), done_(std::move(done)) {}
+    void OnDataAvailable(base::span<const uint8_t> data) override {
+      out_->append(data.begin(), data.end());
+    }
+    void OnDataComplete() override { std::move(done_).Run(); }
+
+   private:
+    raw_ptr<std::string> out_;
+    base::OnceClosure done_;
+  } drain(&body, loop.QuitClosure());
+  mojo::DataPipeDrainer drainer(&drain, client.response_body_release());
+  loop.Run();
+  client.RunUntilComplete();
+
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+  EXPECT_NE(std::string::npos, body.find("https://example.org/gone"));
+  EXPECT_NE(std::string::npos, body.find("Not in this archive"));
+}
+
+TEST_F(WaczUrlLoaderFactoryTest, HeadersThatWouldOutliveTheVisitAreDropped) {
+  AddResponse("https://example.org/p",
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\n"
+              "Strict-Transport-Security: max-age=31536000\r\n"
+              "Clear-Site-Data: \"storage\"\r\n"
+              "Report-To: {\"endpoints\":[{\"url\":\"https://collector\"}]}\r\n"
+              "Content-Security-Policy-Report-Only: default-src 'none'; "
+              "report-uri https://collector\r\n"
+              "Content-Security-Policy: default-src 'self'\r\n\r\n",
+              "<html>page</html>");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  FetchBody(factory, "https://example.org/p", &client);
+  ASSERT_TRUE(client.response_head());
+  const net::HttpResponseHeaders& headers = *client.response_head()->headers;
+
+  // Each of these reaches past the page: one rewrites later navigations to
+  // the host, one would clear the storage the replay is using, and the
+  // reporting ones would have a visit to an archive make requests to a
+  // collector that has nothing to do with it.
+  EXPECT_FALSE(headers.HasHeader("Strict-Transport-Security"));
+  EXPECT_FALSE(headers.HasHeader("Clear-Site-Data"));
+  EXPECT_FALSE(headers.HasHeader("Report-To"));
+  EXPECT_FALSE(headers.HasHeader("Content-Security-Policy-Report-Only"));
+
+  // The enforcing policy stays: the page had it when it was captured, and
+  // replaying the page means replaying what constrained it.
+  EXPECT_EQ("default-src 'self'",
+            headers.GetNormalizedHeader("Content-Security-Policy"));
+  EXPECT_EQ("text/html", client.response_head()->mime_type);
+}
+
 TEST_F(WaczUrlLoaderFactoryTest, AnUnreadableArchiveServesNothing) {
   const base::FilePath path = temp_dir_.GetPath().AppendASCII("not.wacz");
   ASSERT_TRUE(base::WriteFile(path, "this is not a container"));
+  scoped_refptr<WaczArchive> archive = WaczArchive::Open(
+      base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ),
+      kTimestamp);
   mojo::Remote<network::mojom::URLLoaderFactory> factory(
-      WaczUrlLoaderFactory::Create(
-          base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ),
-          kTimestamp));
+      archive->CreateFactory());
 
   // Whether a container can be read is only known once it has been, which is
   // not something the caller can wait for -- so it shows up as every request

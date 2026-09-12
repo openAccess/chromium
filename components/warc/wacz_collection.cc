@@ -108,6 +108,31 @@ std::vector<PageEntry> ReadPages(WaczReader& reader) {
   return pages;
 }
 
+// Headers that meant one thing when the site sent them and mean another when
+// an archive replays them.
+//
+// Not censorship of the record -- the record still holds them, and a reader
+// looking at the archive sees them. These are removed on the way to a renderer
+// because their effect outlives the page or reaches outside it, which replay
+// has no business doing on a visit to an archive.
+void RemoveHeadersUnsafeForReplay(net::HttpResponseHeaders& headers) {
+  // Would clear the storage the replay is using, and on the way out would take
+  // the archive's own state with it.
+  headers.RemoveHeader("Clear-Site-Data");
+
+  // Outlives the tab. A capture of a site that once sent this would go on
+  // rewriting later navigations to that host, long after the archive is shut.
+  headers.RemoveHeader("Strict-Transport-Security");
+
+  // Reporting is a request to somewhere, and a visit to an archive should
+  // reach nowhere. The enforcing policy is left alone: the page had it when it
+  // was captured, and replaying the page means replaying what constrained it.
+  headers.RemoveHeader("Content-Security-Policy-Report-Only");
+  headers.RemoveHeader("Report-To");
+  headers.RemoveHeader("Reporting-Endpoints");
+  headers.RemoveHeader("NEL");
+}
+
 // Splits the stored HTTP message into its header block and its body. A
 // response record holds the message exactly as it arrived, which is why an
 // archive can be replayed at all -- and why this is a parse of the wire
@@ -126,6 +151,7 @@ std::optional<ArchivedResponse> ParseStoredResponse(
   if (response.headers->response_code() == 0) {
     return std::nullopt;
   }
+  RemoveHeadersUnsafeForReplay(*response.headers);
   const base::span<const uint8_t> body = block.subspan(header_end + 4);
   response.body.assign(body.begin(), body.end());
   return response;

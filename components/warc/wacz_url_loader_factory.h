@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/files/file.h"
+#include "base/memory/ref_counted.h"
 #include "base/threading/sequence_bound.h"
 #include "components/warc/wacz_collection.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -54,29 +55,45 @@ class WaczArchiveSource {
   std::optional<WaczCollection> collection_;
 };
 
+// One opened archive, and the moment it is being replayed at.
+//
+// Shared by every factory serving from it: a frame, its iframes and its
+// workers are all reading one container, and opening it once means reading
+// its index once.
+class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
+ public:
+  // Serves `archive` as it stood at `timestamp`, which may be written either
+  // way a WACZ writes one.
+  static scoped_refptr<WaczArchive> Open(base::File archive,
+                                         const std::string& timestamp);
+
+  WaczArchive(const WaczArchive&) = delete;
+  WaczArchive& operator=(const WaczArchive&) = delete;
+
+  // A factory serving from this archive. Hand one to a frame and everything
+  // that frame asks for comes from here.
+  mojo::PendingRemote<network::mojom::URLLoaderFactory> CreateFactory();
+
+  base::SequenceBound<WaczArchiveSource>& source() { return source_; }
+  const std::string& timestamp() const { return timestamp_; }
+
+ private:
+  friend class base::RefCountedThreadSafe<WaczArchive>;
+
+  WaczArchive(base::File archive, const std::string& timestamp);
+  ~WaczArchive();
+
+  base::SequenceBound<WaczArchiveSource> source_;
+  const std::string timestamp_;
+};
+
 class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
  public:
-  // Serves `archive` as it stood at `timestamp`.
-  //
-  // One moment for the whole factory, rather than nearest-to-now for each
-  // request: a page and the images on it were captured seconds apart, but a
-  // page captured in March asking for a script captured in September is not a
-  // page that ever existed. `timestamp` may be written either way a WACZ
-  // writes one.
-  //
-  // Always returns a remote: whether the container can be read is only known
-  // once it has been read, and that is not something the caller's sequence may
-  // wait for. An unreadable archive answers every request with a failure,
-  // which is what an archive missing everything amounts to.
-  static mojo::PendingRemote<network::mojom::URLLoaderFactory> Create(
-      base::File archive,
-      const std::string& timestamp);
-
-  // Use Create(). Public only because a self-deleting class is constructed
-  // for you, and the pass key is what keeps that from being done by hand.
+  // Use WaczArchive::CreateFactory(). Public only because a self-deleting
+  // class is constructed for you, and the pass key is what keeps that from
+  // being done by hand.
   WaczUrlLoaderFactory(
-      base::File archive,
-      const std::string& timestamp,
+      scoped_refptr<WaczArchive> archive,
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
       base::SelfDeletingPassKey key);
 
@@ -97,11 +114,9 @@ class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
   // Private, as a self-deleting class requires: it goes when its receivers do.
   ~WaczUrlLoaderFactory() override;
 
-  // The archive is read where it lies, so reading from it blocks, so it lives
-  // on a sequence where blocking is allowed rather than on this one.
-  base::SequenceBound<WaczArchiveSource> archive_;
-
-  const std::string timestamp_;
+  // Held, not owned: several factories may serve one archive, and the archive
+  // outlives any of them.
+  const scoped_refptr<WaczArchive> archive_;
 };
 
 }  // namespace warc
