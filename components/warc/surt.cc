@@ -12,33 +12,64 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 
 namespace warc {
 
 namespace {
 
-// Decodes the escapes that mean nothing: RFC 3986 calls ALPHA, DIGIT, "-",
-// ".", "_" and "~" unreserved, so "%41" and "A" are the same character and an
-// index must not hold two keys for them. Everything else is left as it stands,
-// since decoding it could change where the path divides.
-std::string DecodeUnreserved(std::string_view text) {
+// Decodes every escape, and keeps going until nothing changes.
+//
+// An escape is not a second way of writing a character -- "%41" is "A" -- so
+// a key that kept them would file one resource under several names, and a
+// lookup would miss what the archive holds. Repeatedly, because "%2561" is
+// "%41" is "a", and a crawler that escaped an already-escaped URL should not
+// thereby hide it.
+std::string DecodeEscapes(std::string_view text) {
+  std::string out(text);
+  // Bounded: each pass strictly shortens the string, and four is far past any
+  // depth a real URL is escaped to.
+  for (int pass = 0; pass < 4; ++pass) {
+    std::string next;
+    next.reserve(out.size());
+    bool changed = false;
+    for (size_t i = 0; i < out.size(); ++i) {
+      if (out[i] == '%' && i + 2 < out.size() && base::IsHexDigit(out[i + 1]) &&
+          base::IsHexDigit(out[i + 2])) {
+        next.push_back(static_cast<char>(base::HexDigitToInt(out[i + 1]) * 16 +
+                                         base::HexDigitToInt(out[i + 2])));
+        i += 2;
+        changed = true;
+        continue;
+      }
+      next.push_back(out[i]);
+    }
+    out = std::move(next);
+    if (!changed) {
+      break;
+    }
+  }
+  return out;
+}
+
+// Escapes what cannot be written plainly: anything below a printable
+// character or above ASCII, and the two characters that would otherwise be
+// read as something other than themselves -- a "%" starting an escape, a "#"
+// starting a fragment.
+//
+// Everything else stays literal, including the "|" and "," that a site's own
+// URLs are full of. Leaving those escaped is what made a replay of Wikipedia
+// miss every stylesheet: the index had them written out and the lookup asked
+// for them escaped.
+std::string EscapeForKey(std::string_view text) {
   std::string out;
   out.reserve(text.size());
-  for (size_t i = 0; i < text.size(); ++i) {
-    if (text[i] == '%' && i + 2 < text.size()) {
-      const int high = base::HexDigitToInt(text[i + 1]);
-      const int low = base::HexDigitToInt(text[i + 2]);
-      if (base::IsHexDigit(text[i + 1]) && base::IsHexDigit(text[i + 2])) {
-        const char decoded = static_cast<char>(high * 16 + low);
-        if (base::IsAsciiAlphaNumeric(decoded) || decoded == '-' ||
-            decoded == '.' || decoded == '_' || decoded == '~') {
-          out.push_back(decoded);
-          i += 2;
-          continue;
-        }
-      }
+  for (unsigned char c : text) {
+    if (c <= 0x20 || c >= 0x7F || c == '%' || c == '#') {
+      base::StringAppendF(&out, "%%%02x", c);
+    } else {
+      out.push_back(static_cast<char>(c));
     }
-    out.push_back(text[i]);
   }
   return out;
 }
@@ -75,9 +106,16 @@ std::string ReverseHost(std::string_view host) {
 // Sorted whole, not by name: two requests differing only in the order of their
 // parameters are one request, and sorting "b=1&b=2" by the whole term keeps
 // repeated names in a settled order too.
-std::string SortQuery(std::string_view query) {
+//
+// Split after decoding rather than before, so that a parameter whose value
+// held an escaped "&" divides where the decoded URL divides.
+std::string NormalizeQuery(std::string_view query) {
+  const std::string decoded = base::ToLowerASCII(DecodeEscapes(query));
   std::vector<std::string> terms = base::SplitString(
-      query, "&", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+      decoded, "&", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  for (std::string& term : terms) {
+    term = EscapeForKey(term);
+  }
   std::sort(terms.begin(), terms.end());
   return base::JoinString(terms, "&");
 }
@@ -107,7 +145,7 @@ std::string ToSurt(const GURL& url) {
     base::StrAppend(&key, {":", url.port()});
   }
 
-  std::string path = base::ToLowerASCII(DecodeUnreserved(url.path()));
+  std::string path = base::ToLowerASCII(DecodeEscapes(url.path()));
   // An empty path segment names nothing, so "/a//b" and "/a/b" are one path.
   // Left in, they would be two keys for one page -- and a server that treats
   // them alike, which most do, would have the archive holding both.
@@ -129,11 +167,10 @@ std::string ToSurt(const GURL& url) {
   if (path.empty()) {
     path = "/";
   }
-  base::StrAppend(&key, {")", path});
+  base::StrAppend(&key, {")", EscapeForKey(path)});
 
   if (url.has_query()) {
-    const std::string query =
-        SortQuery(base::ToLowerASCII(DecodeUnreserved(url.query())));
+    const std::string query = NormalizeQuery(url.query());
     if (!query.empty()) {
       base::StrAppend(&key, {"?", query});
     }

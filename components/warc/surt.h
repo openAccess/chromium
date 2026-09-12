@@ -33,18 +33,16 @@ namespace warc {
 //
 // Returns an empty string for a URL with no host to reverse.
 //
-// Three known departures from that library, all on URLs a browser does not
-// produce, since it resolves and escapes a URL before it ever reaches the
-// network: an escaped slash ("%2F") stays escaped rather than becoming a path
-// separator, a leading "../" is resolved away rather than kept, and a
-// double-escaped character ("%2561") is left as it is rather than being
-// unescaped until it stops changing.
+// Escapes are decoded rather than kept, and kept decoded: an escape is not a
+// second way of writing a character, and a key that treated it as one would
+// file a resource under a name that no lookup asks for. Only what cannot be
+// written plainly is escaped again.
 //
-// They are left as they are deliberately. Matching them means unescaping a URL
-// completely and escaping it again, which is a wider change than the cases
-// justify, and the risk of it is to the URLs that do turn up rather than to
-// these. If an archive from another crawler ever proves to hold such a URL,
-// the test alongside these cases is where the behaviour is pinned.
+// One known departure from that library, on a URL a browser does not produce:
+// a path climbing above its own root ("/../x") is resolved away here, because
+// GURL resolves it before this code sees it, where the reference keeps it
+// literally. A browser resolves a URL before it asks for it, so replay does
+// not meet this; an index built by another crawler could hold one.
 std::string ToSurt(const GURL& url);
 
 }  // namespace warc

@@ -95,28 +95,43 @@ TEST(SurtTest, MatchesTheReferenceImplementation) {
   }
 }
 
-TEST(SurtTest, KnownDeparturesFromTheReference) {
-  // Recorded rather than fixed. Each of these is a URL a browser resolves and
-  // escapes before it ever reaches the network, so replay does not meet them;
-  // an index built by another crawler could hold one, and then these are the
-  // keys it would be filed under and this is where to start.
-  const struct {
-    const char* url;
-    const char* ours;
-    const char* reference;
-  } cases[] = {
-      // The reference reads an escaped slash as a path separator.
-      {"http://example.org/a%2Fb", "org,example)/a%2fb", "org,example)/a/b"},
-      // The reference keeps a path that climbs above the root.
-      {"http://example.org/../x", "org,example)/x", "org,example)/../x"},
-      // The reference unescapes until nothing changes, so "%2561" is "a".
-      {"http://example.org/%2561", "org,example)/%2561", "org,example)/a"},
+TEST(SurtTest, EscapesAreDecodedRatherThanKept) {
+  // An escape is not a second way of writing a character, so a key that kept
+  // one would file a resource under a name no lookup asks for. Leaving "%7C"
+  // and "%2C" escaped is what made a replay of Wikipedia miss every
+  // stylesheet: the index had the pipes written out and the lookup asked for
+  // them escaped.
+  const Case cases[] = {
+      {"https://e.org/p?m=a%7Cb", "org,e)/p?m=a|b"},
+      {"https://e.org/p?m=a%2Cb", "org,e)/p?m=a,b"},
+      {"https://e.org/p?m=a%3Ab", "org,e)/p?m=a:b"},
+      {"https://e.org/a%7Cb", "org,e)/a|b"},
+      {"https://e.org/a%3Fb", "org,e)/a?b"},
+      {"https://e.org/p?a=%2Fb", "org,e)/p?a=/b"},
+      // An escaped "&" divides the query where the decoded URL divides it.
+      {"https://e.org/p?z=%26a", "org,e)/p?a&z="},
+      // Escaped again by a crawler, and still the same resource.
+      {"https://e.org/%2561", "org,e)/a"},
+      // What cannot be written plainly stays escaped.
+      {"https://e.org/a%09b", "org,e)/a%09b"},
+      {"https://e.org/a%23b", "org,e)/a%23b"},
+      {"https://e.org/p?a=100%25", "org,e)/p?a=100%25"},
+      {"https://e.org/p?x=%C3%BC", "org,e)/p?x=%c3%bc"},
+      {"https://e.org/p?q=a+b", "org,e)/p?q=a+b"},
   };
-  for (const auto& test : cases) {
+  for (const Case& test : cases) {
     SCOPED_TRACE(test.url);
-    EXPECT_EQ(test.ours, ToSurt(GURL(test.url)));
-    EXPECT_STRNE(test.ours, test.reference);
+    EXPECT_EQ(test.key, ToSurt(GURL(test.url)));
   }
+}
+
+TEST(SurtTest, TheOneRemainingDepartureFromTheReference) {
+  // A path that climbs above its own root. GURL resolves it away before this
+  // code ever sees the URL, where the reference keeps it literally. Nothing a
+  // browser requests looks like this, since a browser resolves a URL before
+  // it asks for it.
+  EXPECT_EQ("org,example)/x", ToSurt(GURL("http://example.org/../x")));
+  // The reference would say "org,example)/../x".
 }
 
 TEST(SurtTest, UrlsWithNoHostHaveNoKey) {
