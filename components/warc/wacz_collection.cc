@@ -9,6 +9,7 @@
 
 #include "base/json/json_reader.h"
 #include "base/logging.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
@@ -17,6 +18,7 @@
 #include "components/warc/warc_record_parser.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
+#include "third_party/zlib/google/compression_utils.h"
 
 namespace warc {
 
@@ -133,6 +135,55 @@ void RemoveHeadersUnsafeForReplay(net::HttpResponseHeaders& headers) {
   headers.RemoveHeader("NEL");
 }
 
+// Decodes a body that was stored in the encoding it travelled in.
+//
+// A capture keeps what arrived on the wire, which is the point of it: the
+// bytes and the digests are what the server sent. Serving those bytes is a
+// different matter. The network service decodes a response on its way to a
+// renderer, and replay does not go through the network service -- so a
+// gzipped body handed over untouched arrives at the page as gzip, and the page
+// renders it as the binary it is. That is precisely what happened the first
+// time a real site was replayed.
+//
+// So the body is decoded here and the headers are corrected to describe what
+// is now being sent. The archive keeps the wire form; what leaves this
+// function is what the page saw when it was captured, which is the thing
+// replay is for.
+//
+// Returns false if the body is in an encoding this cannot decode, which is
+// better than handing over bytes the page will misread as content.
+bool DecodeBodyForReplay(ArchivedResponse& response) {
+  const std::optional<std::string> encoding =
+      response.headers->GetNormalizedHeader("Content-Encoding");
+  if (!encoding || encoding->empty()) {
+    return true;
+  }
+  if (!base::EqualsCaseInsensitiveASCII(*encoding, "gzip") &&
+      !base::EqualsCaseInsensitiveASCII(*encoding, "x-gzip")) {
+    LOG(ERROR) << "Cannot replay a body stored as " << *encoding
+               << "; serving nothing rather than something unreadable.";
+    return false;
+  }
+
+  std::string decoded;
+  if (!compression::GzipUncompress(
+          std::string_view(reinterpret_cast<const char*>(response.body.data()),
+                           response.body.size()),
+          &decoded)) {
+    LOG(ERROR) << "A stored gzip body would not decode.";
+    return false;
+  }
+  response.body.assign(decoded.begin(), decoded.end());
+
+  // The headers described the body as it was stored, and it is not stored any
+  // more. Left alone they would have the page decode what is already decoded.
+  response.headers->RemoveHeader("Content-Encoding");
+  response.headers->RemoveHeader("Transfer-Encoding");
+  response.headers->SetHeader("Content-Length",
+                              base::NumberToString(response.body.size()));
+  return true;
+}
+
 // Splits the stored HTTP message into its header block and its body. A
 // response record holds the message exactly as it arrived, which is why an
 // archive can be replayed at all -- and why this is a parse of the wire
@@ -154,6 +205,9 @@ std::optional<ArchivedResponse> ParseStoredResponse(
   RemoveHeadersUnsafeForReplay(*response.headers);
   const base::span<const uint8_t> body = block.subspan(header_end + 4);
   response.body.assign(body.begin(), body.end());
+  if (!DecodeBodyForReplay(response)) {
+    return std::nullopt;
+  }
   return response;
 }
 

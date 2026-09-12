@@ -33,11 +33,11 @@ struct ArchivedResponse {
 
   scoped_refptr<net::HttpResponseHeaders> headers;
 
-  // The entity body, still in the encoding the headers declare -- a gzipped
-  // response is still gzipped here. That is what was captured and what the
-  // digests cover, and a browser decodes it on the way to the renderer as it
-  // would any other response, so handing it over untouched is both the
-  // faithful thing and the simple one.
+  // The entity body, decoded. The archive stores what arrived on the wire --
+  // a gzipped response is stored gzipped, which is what the digests cover --
+  // but replay does not pass through the network service, so nothing between
+  // here and the page would decode it. The headers are corrected to match, so
+  // what a caller gets is what the page saw when it was captured.
   std::vector<uint8_t> body;
 
   // When this was captured, as the index records it.

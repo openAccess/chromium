@@ -52,6 +52,7 @@ static_library("replay") {
     "//net",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
+    "//third_party/zlib/google:compression_utils",
     "//url",
   ]
 }

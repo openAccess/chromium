@@ -136,11 +136,13 @@ TEST_F(WaczCollectionTest, ServesAStoredResponse) {
   EXPECT_EQ("20260101120000", response->timestamp);
 }
 
-TEST_F(WaczCollectionTest, BodyKeepsTheEncodingItWasStoredIn) {
-  // Bodies are captured in wire form, so a gzipped response is still gzipped
-  // here and its Content-Encoding still describes it. Handing it over as it
-  // stands is what makes replay faithful; decoding it would leave headers
-  // describing something the body no longer is.
+TEST_F(WaczCollectionTest, ABodyStoredEncodedComesBackDecoded) {
+  // A capture keeps what arrived on the wire, which is why the digests mean
+  // anything. Serving it is another matter: replay does not go through the
+  // network service, so nothing between here and the page decodes a response.
+  // Handed over as stored, a gzipped page arrives at the renderer as gzip and
+  // is rendered as the binary it is -- which is exactly what the first replay
+  // of a real site did.
   const std::vector<uint8_t> gzipped = AsMember(ToBytes("<html>gzipped</html>"));
   AddResponse("https://example.org/z", "20260101120000",
               "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
@@ -154,8 +156,24 @@ TEST_F(WaczCollectionTest, BodyKeepsTheEncodingItWasStoredIn) {
       collection->Lookup(GURL("https://example.org/z"), "20260101120000");
   ASSERT_TRUE(response.has_value());
 
-  EXPECT_EQ("gzip", response->headers->GetNormalizedHeader("Content-Encoding"));
-  EXPECT_EQ(gzipped, response->body);
+  EXPECT_EQ("<html>gzipped</html>", ToString(response->body));
+  // And the headers describe what is now being sent, rather than what was
+  // stored -- left alone they would have the page decode what is decoded.
+  EXPECT_FALSE(response->headers->HasHeader("Content-Encoding"));
+  EXPECT_EQ("20", response->headers->GetNormalizedHeader("Content-Length"));
+}
+
+TEST_F(WaczCollectionTest, ABodyInAnEncodingWeCannotDecodeIsNotServed) {
+  // Better nothing than bytes the page will misread as content.
+  AddResponse("https://example.org/br", "20260101120000",
+              "HTTP/1.1 200 OK\r\nContent-Encoding: br\r\n\r\n",
+              "not really brotli");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  EXPECT_FALSE(
+      collection->Lookup(GURL("https://example.org/br"), "20260101120000")
+          .has_value());
 }
 
 TEST_F(WaczCollectionTest, FindsARecordHoweverTheUrlIsWritten) {
