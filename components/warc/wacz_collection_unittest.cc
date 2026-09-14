@@ -85,6 +85,13 @@ class WaczCollectionTest : public testing::Test {
   }
 
   std::optional<WaczCollection> Build(bool with_index = true) {
+    return WaczCollection::Open(base::File(
+        Write(with_index), base::File::FLAG_OPEN | base::File::FLAG_READ));
+  }
+
+  // Writes the container and returns where it lies, for the callers that want
+  // the file rather than a collection opened over it.
+  base::FilePath Write(bool with_index = true) {
     const base::FilePath content = temp_dir_.GetPath().AppendASCII("content");
     const base::FilePath archive_dir = content.AppendASCII("archive");
     EXPECT_TRUE(base::CreateDirectory(archive_dir));
@@ -105,8 +112,7 @@ class WaczCollectionTest : public testing::Test {
 
     const base::FilePath path = temp_dir_.GetPath().AppendASCII("c.wacz");
     EXPECT_TRUE(zip::Zip(content, path, /*include_hidden_files=*/false));
-    return WaczCollection::Open(
-        base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ));
+    return path;
   }
 
   static constexpr char kPagesHeaderLine[] =
@@ -256,6 +262,48 @@ TEST_F(WaczCollectionTest, ReadsThePagesTheCaptureVisited) {
   EXPECT_EQ("Page https://example.org/one", collection->pages()[0].title);
   // The line declaring the format is not a page.
   EXPECT_EQ("https://example.org/two", collection->pages()[1].url);
+}
+
+// Asking what an archive holds is a smaller question than being ready to
+// answer for it: a browser has to know which URL to land on before it opens
+// the archive to serve, and reading the whole index to find that out would be
+// work done for nothing.
+TEST_F(WaczCollectionTest, ReadsThePageListWithoutOpeningACollection) {
+  AddResponse("https://example.org/one", "20260101120000",
+              "HTTP/1.1 200 OK\r\n\r\n", "1");
+  AddResponse("https://example.org/two", "20260101120001",
+              "HTTP/1.1 200 OK\r\n\r\n", "2");
+
+  const std::vector<PageEntry> pages = ReadPageList(
+      base::File(Write(), base::File::FLAG_OPEN | base::File::FLAG_READ));
+
+  ASSERT_EQ(2u, pages.size());
+  EXPECT_EQ("https://example.org/one", pages[0].url);
+  EXPECT_EQ("20260101120000", pages[0].timestamp);
+  EXPECT_EQ("https://example.org/two", pages[1].url);
+}
+
+// An index is what a collection cannot do without; a page list is read
+// straight out of the container and does not care whether one is there.
+TEST_F(WaczCollectionTest, ReadsThePageListOfAContainerWithNoIndex) {
+  AddResponse("https://example.org/one", "20260101120000",
+              "HTTP/1.1 200 OK\r\n\r\n", "1");
+
+  EXPECT_FALSE(Build(/*with_index=*/false).has_value());
+
+  const std::vector<PageEntry> pages =
+      ReadPageList(base::File(Write(/*with_index=*/false),
+                              base::File::FLAG_OPEN | base::File::FLAG_READ));
+  ASSERT_EQ(1u, pages.size());
+  EXPECT_EQ("https://example.org/one", pages[0].url);
+}
+
+// Nothing to land on, rather than an error to handle: a caller opens no tab.
+TEST_F(WaczCollectionTest, APageListIsEmptyWhenThereIsNoContainerToRead) {
+  EXPECT_TRUE(
+      ReadPageList(base::File(temp_dir_.GetPath().AppendASCII("absent.wacz"),
+                              base::File::FLAG_OPEN | base::File::FLAG_READ))
+          .empty());
 }
 
 TEST_F(WaczCollectionTest, APagesTimeIsAcceptedAsWrittenInThePageList) {

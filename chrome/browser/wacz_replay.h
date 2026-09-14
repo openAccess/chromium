@@ -5,13 +5,15 @@
 #ifndef CHROME_BROWSER_WACZ_REPLAY_H_
 #define CHROME_BROWSER_WACZ_REPLAY_H_
 
+#include <vector>
+
 #include "content/public/browser/storage_partition_config.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "url/gurl.h"
 
 class BrowserWindowInterface;
-class GURL;
 
 namespace content {
 class BrowserContext;
@@ -61,17 +63,31 @@ bool IsReplayPartition(const content::StoragePartitionConfig& config);
 // outside a replay partition cannot reach one however the browser was started.
 bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id);
 
-// Opens `url` in a replay tab of `browser`: an ordinary tab in an ordinary
-// window, except that it lives in the replay partition and is answered out of
-// the archive. A tab beside it browses the web as it always did.
+// Opens the replay tabs this browser was started for: one for each of `urls`,
+// or -- given none -- one on the first page of the archive's own page list.
 //
-// The partition is fixed to the tab rather than worked out per navigation,
+// A replay tab is an ordinary tab in an ordinary window, except that it lives
+// in the replay partition and is answered out of the archive. A tab beside it
+// browses the web as it always did.
+//
+// The page list settles both questions a replay has to answer before it can
+// start. It is the only record of which of an archive's URLs were pages rather
+// than the images and scripts that hung off them, so it says where to land
+// when nothing else does; and it is the only record of when each page was
+// visited, so it says which moment to serve. A URL named on the command line
+// is looked up in it too: replaying a page at some other capture's time is
+// exactly the sort of miss nobody notices.
+//
+// The partition is fixed to each tab rather than worked out per navigation,
 // because a capture is somewhere you are and not a page you are on: follow a
 // link out of an archived page and you are still inside the archive. It is
-// also why the tab is made this way rather than opened and then moved -- a tab
+// also why a tab is made this way rather than opened and then moved -- a tab
 // that began outside the partition would have a moment in which what it asked
 // for could still be fetched.
-void OpenReplayTab(BrowserWindowInterface* browser, const GURL& url);
+//
+// Reading the page list means reading the container, which blocks, so the tabs
+// appear a moment after the window does, and `browser` may be gone by then.
+void OpenReplayTabs(BrowserWindowInterface* browser, std::vector<GURL> urls);
 
 // Fills `receiver` with a factory serving the archive. Every http and https
 // request every frame makes goes through it, so the archived site keeps its

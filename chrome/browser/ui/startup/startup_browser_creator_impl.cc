@@ -295,15 +295,14 @@ void StartupBrowserCreatorImpl::Launch(
     return;
   }
 
-  // Each page this browser was given an archive for opens in a replay tab: an
-  // ordinary tab, in this same window, that is answered out of the archive and
-  // keeps its own storage. Beside it the rest of the browser still browses the
-  // web, which is what lets a capture and the live site be looked at together.
-  //
-  // Which pages a capture holds is the page list's answer to give, and nothing
-  // reads the page list yet; until it does, they are named on the command line.
-  for (const GURL& url : replay_urls_) {
-    wacz_replay::OpenReplayTab(browser, url);
+  // The pages this browser was given an archive for open in replay tabs:
+  // ordinary tabs, in this same window, answered out of the archive and
+  // keeping their own storage. Beside them the rest of the browser still
+  // browses the web, which is what lets a capture and the live site be looked
+  // at together. Given no page in particular, the archive's own page list says
+  // where the capture began.
+  if (wacz_replay::IsEnabled()) {
+    wacz_replay::OpenReplayTabs(browser, std::move(replay_urls_));
   }
 
   if (command_line_->HasSwitch(switches::kInstallChromeApp)) {

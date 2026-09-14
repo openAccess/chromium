@@ -58,6 +58,16 @@ struct PageEntry {
   std::string title;
 };
 
+// The pages a WACZ says it captured, or an empty list if it names none or
+// cannot be read.
+//
+// Separate from opening a collection because it is a smaller question than
+// being ready to answer for one: this reads the container's directory and one
+// small entry, where opening reads and sorts the whole index. It is also the
+// question that comes first, since until a browser knows which of an
+// archive's URLs were pages there is nothing for it to land on.
+std::vector<PageEntry> ReadPageList(base::File file);
+
 // A WACZ opened for reading: the index held in memory, the archives read
 // where they lie.
 //

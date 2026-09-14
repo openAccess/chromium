@@ -235,6 +235,14 @@ ArchivedResponse::ArchivedResponse(ArchivedResponse&&) = default;
 ArchivedResponse& ArchivedResponse::operator=(ArchivedResponse&&) = default;
 ArchivedResponse::~ArchivedResponse() = default;
 
+std::vector<PageEntry> ReadPageList(base::File file) {
+  std::optional<WaczReader> reader = WaczReader::Open(std::move(file));
+  if (!reader) {
+    return {};
+  }
+  return ReadPages(*reader);
+}
+
 WaczCollection::WaczCollection() = default;
 WaczCollection::WaczCollection(WaczCollection&&) = default;
 WaczCollection& WaczCollection::operator=(WaczCollection&&) = default;
