@@ -6607,13 +6607,19 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
     network::mojom::URLLoaderFactoryOverridePtr* factory_override,
     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
     bool is_for_network_service) {
-  // A browser replaying an archive answers every request out of it -- the
+  // A request from a replay tab is answered out of the archive -- the
   // document, and the subresources the document goes on to ask for. Taking
   // the whole factory rather than interposing on it is what leaves the
   // archived site its own URLs and its own origin, so nothing has to rewrite
   // its links; and it is what leaves nothing to fall through to, so a
   // resource the archive lacks is missing rather than quietly fetched.
-  if (wacz_replay::IsEnabled()) {
+  //
+  // What is asked is the storage partition, not the command line, so that the
+  // two halves of the isolation are one fact: a frame is served an archive
+  // exactly when it is in the partition that archive's content is confined to.
+  // A tab outside it -- in the same window, in the same profile -- is
+  // untouched here and reaches the network as it always did.
+  if (wacz_replay::ServesFromArchive(frame, render_process_id)) {
     auto [receiver, passthrough] = factory_builder.Append();
     wacz_replay::BindFactory(std::move(receiver), std::move(passthrough));
     return;

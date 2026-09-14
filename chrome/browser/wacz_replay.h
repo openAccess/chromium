@@ -5,22 +5,73 @@
 #ifndef CHROME_BROWSER_WACZ_REPLAY_H_
 #define CHROME_BROWSER_WACZ_REPLAY_H_
 
+#include "content/public/browser/storage_partition_config.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+
+class BrowserWindowInterface;
+class GURL;
+
+namespace content {
+class BrowserContext;
+class RenderFrameHost;
+}  // namespace content
 
 namespace wacz_replay {
 
 // Whether this browser was started to replay an archive rather than to browse
 // the web: --wacz-replay=<path to a .wacz>.
 //
-// It is the whole browser rather than a tab, which is the honest shape for a
-// first one. Replaying in one tab of an ordinary browser means a tab whose
-// storage, cookies and network are separated from the rest, and that
-// separation is the part that has to be got right rather than got working.
-// Until then, a browser started this way reaches nothing but the archive --
-// so pair it with a --user-data-dir of its own.
+// This answers where the archive comes from, not who is allowed to read it.
+// What a request is answered from is decided by the storage partition it comes
+// from -- see ServesFromArchive() -- so that replaying can become a property
+// of a tab without the decision having to move.
 bool IsEnabled();
+
+// The storage partition archived content is replayed in.
+//
+// Serving an archived origin *as* that origin is the whole point of replaying
+// in a browser, and it is also what makes a partition of its own necessary:
+// the page runs as https://example.com, so in an ordinary profile its scripts
+// would read the live site's cookies and its writes would land in the live
+// site's storage. Here they read and write nothing but each other, and the
+// partition is in memory, so a capture leaves nothing behind when the browser
+// exits -- including the things an archived response header would otherwise
+// set for good, an HSTS entry above all.
+//
+// Named for the archive, not for the browser: two archives are two captures of
+// the web, and what one of them stored is no more the other's than a live
+// site's would be. The name is a digest of the path as it was given, so the
+// same archive opened twice is one partition; the same archive under two
+// spellings is two, which costs nothing when neither survives the browser.
+content::StoragePartitionConfig ReplayPartition(
+    content::BrowserContext* browser_context);
+
+// Whether `config` is a partition returned by ReplayPartition() -- for any
+// archive, since what follows from it is the same for all of them.
+bool IsReplayPartition(const content::StoragePartitionConfig& config);
+
+// Whether what this frame asks for is answered out of an archive. `frame` is
+// null for a worker, which belongs to a process instead; either way the
+// question is the same one, since a process serves a single partition.
+//
+// This is the test that decides it, and it is deliberately not a test of the
+// command line: a frame reaches an archive because of where it is, and a frame
+// outside a replay partition cannot reach one however the browser was started.
+bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id);
+
+// Opens `url` in a replay tab of `browser`: an ordinary tab in an ordinary
+// window, except that it lives in the replay partition and is answered out of
+// the archive. A tab beside it browses the web as it always did.
+//
+// The partition is fixed to the tab rather than worked out per navigation,
+// because a capture is somewhere you are and not a page you are on: follow a
+// link out of an archived page and you are still inside the archive. It is
+// also why the tab is made this way rather than opened and then moved -- a tab
+// that began outside the partition would have a moment in which what it asked
+// for could still be fetched.
+void OpenReplayTab(BrowserWindowInterface* browser, const GURL& url);
 
 // Fills `receiver` with a factory serving the archive. Every http and https
 // request every frame makes goes through it, so the archived site keeps its

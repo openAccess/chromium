@@ -57,6 +57,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_util.h"
+#include "chrome/browser/wacz_replay.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/chrome_version.h"
 #include "chrome/common/pref_names.h"
@@ -116,6 +117,27 @@ bool ShouldRestoreApps(bool is_post_restart, Profile* profile) {
 #else
   return is_post_restart;
 #endif
+}
+
+// Removes from `tabs` the pages an archive could answer for, and returns them.
+// A browser given an archive replays those rather than fetching them, so they
+// must not also be opened as ordinary tabs: two tabs on one URL, one of them
+// going to the network, is exactly what replaying is meant to avoid. What an
+// archive could not hold -- the new tab page, a chrome:// page -- is left
+// where it was, because the isolation belongs to the replay tab and not to the
+// browser around it.
+std::vector<GURL> TakeReplayableTabs(StartupTabs* tabs) {
+  std::vector<GURL> replayable;
+  StartupTabs remaining;
+  for (const StartupTab& tab : *tabs) {
+    if (tab.url.SchemeIsHTTPOrHTTPS()) {
+      replayable.push_back(tab.url);
+    } else {
+      remaining.push_back(tab);
+    }
+  }
+  *tabs = std::move(remaining);
+  return replayable;
 }
 
 void UrlsToTabs(const std::vector<GURL>& urls, StartupTabs* tabs) {
@@ -271,6 +293,17 @@ void StartupBrowserCreatorImpl::Launch(
   if (!browser) {
     LOG(ERROR) << "No browser window found for startup.";
     return;
+  }
+
+  // Each page this browser was given an archive for opens in a replay tab: an
+  // ordinary tab, in this same window, that is answered out of the archive and
+  // keeps its own storage. Beside it the rest of the browser still browses the
+  // web, which is what lets a capture and the live site be looked at together.
+  //
+  // Which pages a capture holds is the page list's answer to give, and nothing
+  // reads the page list yet; until it does, they are named on the command line.
+  for (const GURL& url : replay_urls_) {
+    wacz_replay::OpenReplayTab(browser, url);
   }
 
   if (command_line_->HasSwitch(switches::kInstallChromeApp)) {
@@ -531,6 +564,11 @@ void StartupBrowserCreatorImpl::DetermineURLsAndLaunch(
       StartupTabProviderImpl(), process_startup, is_incognito_or_guest,
       is_post_crash_launch, promotions_enabled, whats_new_enabled);
   StartupTabs tabs = std::move(result.tabs);
+
+  // Taken before either way of opening them is reached, so that neither does.
+  if (wacz_replay::IsEnabled()) {
+    replay_urls_ = TakeReplayableTabs(&tabs);
+  }
 
   // Return immediately if we start an async restore, since the remainder of
   // that process is self-contained.

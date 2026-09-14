@@ -239,6 +239,11 @@ class StartupBrowserCreatorImpl {
   chrome::startup::IsFirstRun is_first_run_;
 
   std::optional<std::string> current_chrome_version_string_for_testing_;
+
+  // The pages this launch should replay out of an archive rather than fetch.
+  // Taken out of the startup tabs while they are being decided, and opened as
+  // replay tabs once there is a window to open them in.
+  std::vector<GURL> replay_urls_;
 };
 
 #endif  // CHROME_BROWSER_UI_STARTUP_STARTUP_BROWSER_CREATOR_IMPL_H_
