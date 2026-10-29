@@ -1003,6 +1003,14 @@ struct URLLoaderFactoryParams {
   // will target. If absent, the default network is instead used. Represents a
   //net::handles::NetworkHandle. See URLRequestContext::CreateRequest.
   int64? target_network;
+
+  // The WARC capture that requests made through this factory record into,
+  // started with NetworkService.StartWarcCapture. Set by the browser on the
+  // factories of a frame in a tab that is being archived on its own; the
+  // navigation that committed the frame carries the same id in its
+  // TrustedUrlRequestParams. Absent, or naming a capture that has stopped,
+  // requests go to the session-wide recording if there is one.
+  mojo_base.mojom.UnguessableToken? warc_capture_id;
 };
 
 struct IdAndAllowlistedPatterns {

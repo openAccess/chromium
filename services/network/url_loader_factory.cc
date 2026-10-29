@@ -381,23 +381,35 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
             resource_request.devtools_request_id.value());
   }
 
+  // Which capture the request belongs to, if it is from a tab being archived
+  // on its own. A navigation says so in its trusted params, which only a
+  // trusted factory accepts; anything else inherits the factory's, which the
+  // browser set when it made the factory for the frame.
+  const std::optional<base::UnguessableToken> warc_capture_id =
+      resource_request.trusted_params &&
+              resource_request.trusted_params->warc_capture_id
+          ? resource_request.trusted_params->warc_capture_id
+          : params_->warc_capture_id;
+
   // When WARC recording is on, hand the loader a factory rather than a single
   // recorder: a redirect chain is archived as one record pair per hop, so the
   // loader mints a new recorder each time it follows one.
   WarcExchangeRecorderFactory warc_recorder_factory;
   if (context_->network_service() &&
-      context_->network_service()->warc_recorder()) {
+      context_->network_service()->GetWarcRecorder(warc_capture_id)) {
     warc_recorder_factory = base::BindRepeating(
         [](base::WeakPtr<NetworkService> service,
+           const std::optional<base::UnguessableToken>& capture_id,
            const std::string& browsing_context)
             -> std::unique_ptr<WarcExchangeRecorder> {
-          if (!service || !service->warc_recorder()) {
+          WarcRecorder* recorder =
+              service ? service->GetWarcRecorder(capture_id) : nullptr;
+          if (!recorder) {
             return nullptr;
           }
-          return service->warc_recorder()->CreateExchangeRecorder(
-              browsing_context);
+          return recorder->CreateExchangeRecorder(browsing_context);
         },
-        context_->network_service()->GetWeakPtr());
+        context_->network_service()->GetWeakPtr(), warc_capture_id);
   }
 
   // Resources the page only takes ranges of are fetched whole on the side, so
@@ -408,14 +420,16 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
     warc_range_completion = base::BindRepeating(
         [](base::WeakPtr<NetworkService> service,
            base::WeakPtr<NetworkContext> context,
+           const std::optional<base::UnguessableToken>& capture_id,
            const net::URLRequest& partial) {
           if (!service || !context) {
             return;
           }
           context->GetWarcRangeCompleter().CompleteIfNeeded(
-              partial, service->warc_recorder());
+              partial, service->GetWarcRecorder(capture_id));
         },
-        context_->network_service()->GetWeakPtr(), context_->GetWeakPtr());
+        context_->network_service()->GetWeakPtr(), context_->GetWeakPtr(),
+        warc_capture_id);
   }
 
   mojo::ScopedDataPipeProducerHandle provided_response_body_stream;

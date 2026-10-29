@@ -9,7 +9,6 @@
 
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -71,9 +70,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRangeCompleter {
   ~WarcRangeCompleter();
 
   // Schedules a complete fetch of whatever `partial` asked for a range of,
-  // unless this session already has one. `recorder` mints the record; it is
-  // passed per call rather than held because recording can stop while a fetch
-  // is still in flight.
+  // unless `recorder`'s capture already has one. `recorder` mints the record
+  // and is remembered weakly with the fetch, since captures stop and the
+  // capture a queued fetch was for may be gone by the time it starts.
   void CompleteIfNeeded(const net::URLRequest& partial, WarcRecorder* recorder);
 
   size_t started_for_testing() const { return started_; }
@@ -101,21 +100,18 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRangeCompleter {
     // The completion belongs to the same browsing context as the ranged
     // requests that prompted it, so it is grouped with them in the archive.
     std::string browsing_context;
+
+    // The capture the ranged requests went to, and so the one the complete
+    // copy belongs in. Null once that capture has stopped, which a queued
+    // completion has to tolerate: one can stop between a 206 arriving and its
+    // completion starting.
+    base::WeakPtr<WarcRecorder> recorder;
   };
 
   void MaybeStartNext();
   void OnFetchDone(Fetch* fetch);
 
   const raw_ptr<net::URLRequestContext> url_request_context_;
-
-  // The session's recorder, refreshed on each call. Null while recording is
-  // not active, which a queued completion has to tolerate: recording can stop
-  // between a 206 arriving and its completion starting.
-  raw_ptr<WarcRecorder> recorder_ = nullptr;
-
-  // URLs already fetched, in flight, or queued. A page requests dozens of
-  // ranges of the same file; it must only be fetched once.
-  std::set<GURL> seen_;
 
   base::circular_deque<Queued> pending_;
   std::vector<std::unique_ptr<Fetch>> active_;

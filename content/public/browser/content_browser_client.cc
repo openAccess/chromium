@@ -257,6 +257,11 @@ void ContentBrowserClient::OverrideURLLoaderFactoryParams(
     bool is_for_service_worker,
     network::mojom::URLLoaderFactoryParams* factory_params) {}
 
+std::optional<base::UnguessableToken> ContentBrowserClient::GetWarcCaptureId(
+    WebContents* web_contents) {
+  return std::nullopt;
+}
+
 void ContentBrowserClient::GetAdditionalViewSourceSchemes(
     std::vector<std::string>* additional_schemes) {
   GetAdditionalWebUISchemes(additional_schemes);

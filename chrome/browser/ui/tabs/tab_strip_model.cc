@@ -78,6 +78,7 @@
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
+#include "chrome/browser/warc_tab_capture.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
@@ -2670,6 +2671,9 @@ bool TabStripModel::IsContextMenuCommandEnabled(
     case CommandGlicUnshare:
       return true;
 
+    case CommandToggleWarcCapture:
+      return true;
+
     case CommandCopyURL:
       DCHECK(delegate()->IsForWebApp());
       return true;
@@ -2874,6 +2878,19 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
                                                  std::move(callback));
         } else {
           std::move(callback).Run();
+        }
+      }
+      break;
+    }
+
+    case CommandToggleWarcCapture: {
+      const bool start = WillContextMenuStartWarcCapture(context_index);
+      for (int index : GetIndicesForCommand(context_index)) {
+        content::WebContents* contents = GetWebContentsAt(index);
+        if (start) {
+          WarcTabCapture::Start(contents);
+        } else {
+          WarcTabCapture::Stop(contents);
         }
       }
       break;
@@ -3351,6 +3368,17 @@ void TabStripModel::ExecuteCloseTabsCommand(
 
 bool TabStripModel::WillContextMenuMuteSites(int index) {
   return !AreAllSitesMuted(*this, GetIndicesForCommand(index));
+}
+
+bool TabStripModel::WillContextMenuStartWarcCapture(int index) {
+  // Like pinning: if every selected tab is being archived, the command stops
+  // them all; otherwise it starts the ones that are not.
+  for (int i : GetIndicesForCommand(index)) {
+    if (!WarcTabCapture::IsCapturing(GetWebContentsAt(i))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool TabStripModel::WillContextMenuPin(int index) {

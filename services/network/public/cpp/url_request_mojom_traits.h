@@ -208,6 +208,11 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE)
     return trusted_params.is_ad_auction_trusted_signals_request;
   }
 
+  static const std::optional<base::UnguessableToken>& warc_capture_id(
+      const network::ResourceRequest::TrustedParams& trusted_params) {
+    return trusted_params.warc_capture_id;
+  }
+
   static bool Read(network::mojom::TrustedUrlRequestParamsDataView data,
                    network::ResourceRequest::TrustedParams* out);
 };

@@ -244,6 +244,8 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
       bool is_for_isolated_world,
       bool is_for_service_worker,
       network::mojom::URLLoaderFactoryParams* factory_params) override;
+  std::optional<base::UnguessableToken> GetWarcCaptureId(
+      content::WebContents* web_contents) override;
   void GetAdditionalWebUISchemes(
       std::vector<std::string>* additional_schemes) override;
   bool IsInternalScheme(const GURL& url) override;

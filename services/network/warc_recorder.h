@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -295,6 +296,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
       uint64_t max_file_bytes,
       base::RepeatingCallback<void(NextFileCallback)> request_next_file);
 
+  // Whether a complete copy of `url` still needs fetching for this capture,
+  // claiming it if so. A page asks for dozens of ranges of one file and the
+  // archive needs it whole only once; asking the capture rather than whoever
+  // fetches means two captures each get their own copy.
+  bool ClaimRangeCompletion(const GURL& url);
+
+  base::WeakPtr<WarcRecorder> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
   warc::WarcWriter& writer_for_testing() { return *writer_; }
 
  private:
@@ -340,6 +351,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // run one at a time, so one file suffices; a completion that finds it gone
   // keeps its body in memory under the usual cap.
   base::File spill_file_;
+
+  // URLs this capture has completed, is completing, or has queued.
+  std::set<GURL> range_completions_;
 
   std::unique_ptr<warc::WarcBodySpill> TakeBodySpill();
   void ReturnSpillFile(base::File file);

@@ -587,6 +587,7 @@
 #include "chrome/browser/ui/webui/chrome_content_browser_client_webui_part.h"
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #include "chrome/browser/wacz_replay.h"
+#include "chrome/browser/warc_tab_capture.h"
 #include "chrome/browser/web_applications/isolated_web_apps/chrome_content_browser_client_isolated_web_apps_part.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_error_page.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
@@ -2195,6 +2196,12 @@ void ChromeContentBrowserClient::OverrideURLLoaderFactoryParams(
       browser_context, origin, is_for_isolated_world, is_for_service_worker,
       factory_params);
 #endif
+}
+
+std::optional<base::UnguessableToken>
+ChromeContentBrowserClient::GetWarcCaptureId(
+    content::WebContents* web_contents) {
+  return WarcTabCapture::GetCaptureId(web_contents);
 }
 
 // These are treated as WebUI schemes but do not get WebUI bindings. Also,

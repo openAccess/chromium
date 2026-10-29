@@ -521,6 +521,15 @@ void TabMenuModel::Build(int index) {
             ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize));
   }
 
+  // Archiving records what a tab loads from now on into a WARC capture of its
+  // own; see WarcTabCapture.
+  AddItem(TabStripModel::CommandToggleWarcCapture,
+          l10n_util::GetPluralStringFUTF16(
+              tab_strip_->WillContextMenuStartWarcCapture(index)
+                  ? IDS_TAB_CXMENU_START_WARC_CAPTURE
+                  : IDS_TAB_CXMENU_STOP_WARC_CAPTURE,
+              num_tabs));
+
   const bool show_glic_items =
       glic::GlicEnabling::IsReadyForProfile(tab_strip_->profile());
   bool glic_displayed = false;

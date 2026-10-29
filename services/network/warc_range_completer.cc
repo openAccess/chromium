@@ -218,7 +218,7 @@ WarcRangeCompleter::~WarcRangeCompleter() = default;
 
 void WarcRangeCompleter::CompleteIfNeeded(const net::URLRequest& partial,
                                           WarcRecorder* recorder) {
-  if (!recorder || !seen_.insert(partial.url()).second) {
+  if (!recorder || !recorder->ClaimRangeCompletion(partial.url())) {
     return;
   }
 
@@ -236,9 +236,9 @@ void WarcRangeCompleter::CompleteIfNeeded(const net::URLRequest& partial,
   for (const char* name : kRangeHeaders) {
     queued.headers.RemoveHeader(name);
   }
+  queued.recorder = recorder->GetWeakPtr();
 
   pending_.push_back(std::move(queued));
-  recorder_ = recorder;
   MaybeStartNext();
 }
 
@@ -246,13 +246,13 @@ void WarcRangeCompleter::MaybeStartNext() {
   while (!pending_.empty() && active_.size() < kMaxConcurrentFetches) {
     Queued queued = std::move(pending_.front());
     pending_.pop_front();
-    if (!recorder_) {
+    if (!queued.recorder) {
       continue;
     }
     ++started_;
     active_.push_back(std::make_unique<Fetch>(
         queued, url_request_context_,
-        recorder_->CreateCompletionRecorder(queued.browsing_context),
+        queued.recorder->CreateCompletionRecorder(queued.browsing_context),
         base::BindOnce(&WarcRangeCompleter::OnFetchDone,
                        weak_factory_.GetWeakPtr())));
     active_.back()->Start();

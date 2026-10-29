@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 
+#include "base/files/file_path.h"
 #include "base/time/time.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
@@ -22,8 +23,9 @@
 // tooling picks likely-looking HTML responses and uses the URL where the title
 // belongs. Only the browser knows, so only the browser can write it.
 //
-// One of these is attached per tab, and each appends to the one file the
-// capture shares.
+// One of these is attached per tab. Under --warc-output each appends to the one
+// file the session's capture shares; a tab archived on its own (see
+// WarcTabCapture) writes to its own capture's instead.
 class WarcPageRecorder : public content::WebContentsObserver,
                          public content::WebContentsUserData<WarcPageRecorder> {
  public:
@@ -35,6 +37,12 @@ class WarcPageRecorder : public content::WebContentsObserver,
   // Attaches a recorder if this browser is capturing to a WARC. Costs nothing
   // when it is not, which is every ordinary run.
   static void MaybeCreateForWebContents(content::WebContents* web_contents);
+
+  // Lists this tab's pages in `directory` from now on, or in the session's
+  // capture again if `directory` is empty. The page waiting for its title is
+  // written first, to wherever it was headed: it was loaded under that
+  // capture.
+  void SetCaptureDirectory(const base::FilePath& directory);
 
  private:
   friend class content::WebContentsUserData<WarcPageRecorder>;
@@ -63,6 +71,9 @@ class WarcPageRecorder : public content::WebContentsObserver,
     std::string id;
   };
   std::optional<PendingPage> pending_;
+
+  // The capture of this tab alone, if it has one. Empty means the session's.
+  base::FilePath capture_directory_;
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 };

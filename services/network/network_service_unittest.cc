@@ -1702,6 +1702,204 @@ TEST_F(NetworkServiceTestWithService, RawRequestHeadersAbsent) {
   client()->RunUntilComplete();
 }
 
+// Loads `url` through a factory of its own, with the factory's params and the
+// request's trusted params carrying the capture ids given. A navigation is the
+// only request the browser marks itself, and only a trusted factory accepts
+// that, so `request_capture_id` makes the factory trusted.
+void LoadForWarcCapture(
+    mojom::NetworkContext* context,
+    const GURL& url,
+    std::optional<base::UnguessableToken> factory_capture_id,
+    std::optional<base::UnguessableToken> request_capture_id = std::nullopt) {
+  mojom::URLLoaderFactoryParamsPtr params =
+      mojom::URLLoaderFactoryParams::New();
+  params->process_id = OriginatingProcessId::browser();
+  params->is_orb_enabled = false;
+  params->is_trusted = request_capture_id.has_value();
+  params->warc_capture_id = factory_capture_id;
+  mojo::Remote<mojom::URLLoaderFactory> factory;
+  context->CreateURLLoaderFactory(factory.BindNewPipeAndPassReceiver(),
+                                  std::move(params));
+
+  ResourceRequest request;
+  request.url = url;
+  request.method = "GET";
+  request.request_initiator = url::Origin();
+  if (request_capture_id) {
+    request.trusted_params = ResourceRequest::TrustedParams();
+    request.trusted_params->warc_capture_id = request_capture_id;
+  }
+
+  TestURLLoaderClient client;
+  mojo::Remote<mojom::URLLoader> loader;
+  factory->CreateLoaderAndStart(
+      loader.BindNewPipeAndPassReceiver(), 1, mojom::kURLLoadOptionNone,
+      request, client.CreateRemote(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+  client.RunUntilComplete();
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+}
+
+base::File OpenWarcForWriting(const base::FilePath& path) {
+  return base::File(path,
+                    base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+}
+
+void StartWarcCaptureAndWait(mojom::NetworkService* service,
+                             const base::UnguessableToken& id,
+                             const base::FilePath& path) {
+  base::test::TestFuture<void> started;
+  service->StartWarcCapture(id, OpenWarcForWriting(path),
+                            path.BaseName().AsUTF8Unsafe(),
+                            /*compress_records=*/false, base::File(),
+                            /*redact_credentials=*/true, started.GetCallback());
+  ASSERT_TRUE(started.Wait());
+}
+
+void StopWarcCaptureAndWait(mojom::NetworkService* service,
+                            const base::UnguessableToken& id) {
+  base::test::TestFuture<void> stopped;
+  service->StopWarcCapture(id, stopped.GetCallback());
+  ASSERT_TRUE(stopped.Wait());
+}
+
+std::string ReadArchive(const base::FilePath& path) {
+  std::string contents;
+  EXPECT_TRUE(base::ReadFileToString(path, &contents));
+  return contents;
+}
+
+// A request marked with a capture's id is written to that capture and to no
+// other; one marked with none goes to the session-wide recording.
+TEST_F(NetworkServiceTestWithService, WarcCaptureRecordsOnlyItsOwnRequests) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath session_path =
+      temp_dir.GetPath().AppendASCII("session.warc");
+  const base::FilePath tab_a_path = temp_dir.GetPath().AppendASCII("a.warc");
+  const base::FilePath tab_b_path = temp_dir.GetPath().AppendASCII("b.warc");
+  const auto tab_a = base::UnguessableToken::Create();
+  const auto tab_b = base::UnguessableToken::Create();
+
+  network_service_->StartWarcRecording(
+      OpenWarcForWriting(session_path), "session.warc",
+      /*compress_records=*/false, base::File(), /*redact_credentials=*/true);
+  StartWarcCaptureAndWait(service(), tab_a, tab_a_path);
+  StartWarcCaptureAndWait(service(), tab_b, tab_b_path);
+  CreateNetworkContext();
+
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?to-a"),
+                     tab_a);
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?to-b"),
+                     tab_b);
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?to-session"),
+                     std::nullopt);
+
+  // Read as soon as each stop is answered: the reply is the promise that the
+  // file is complete, and that is what this relies on.
+  StopWarcCaptureAndWait(service(), tab_a);
+  StopWarcCaptureAndWait(service(), tab_b);
+  const std::string a = ReadArchive(tab_a_path);
+  const std::string b = ReadArchive(tab_b_path);
+
+  Shutdown();
+  task_environment_.RunUntilIdle();
+  const std::string session = ReadArchive(session_path);
+
+  EXPECT_NE(a.find("GET /echoquery?to-a "), std::string::npos);
+  EXPECT_EQ(a.find("to-b"), std::string::npos);
+  EXPECT_EQ(a.find("to-session"), std::string::npos);
+
+  EXPECT_NE(b.find("GET /echoquery?to-b "), std::string::npos);
+  EXPECT_EQ(b.find("to-a"), std::string::npos);
+  EXPECT_EQ(b.find("to-session"), std::string::npos);
+
+  EXPECT_NE(session.find("GET /echoquery?to-session "), std::string::npos);
+  EXPECT_EQ(session.find("to-a"), std::string::npos);
+  EXPECT_EQ(session.find("to-b"), std::string::npos);
+}
+
+// A navigation is marked on the request rather than the factory, since the
+// browser's own factory serves every tab.
+TEST_F(NetworkServiceTestWithService, WarcCaptureTakesNavigationsByRequest) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath tab_path = temp_dir.GetPath().AppendASCII("tab.warc");
+  const auto tab = base::UnguessableToken::Create();
+
+  StartWarcCaptureAndWait(service(), tab, tab_path);
+  CreateNetworkContext();
+
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?navigation"),
+                     /*factory_capture_id=*/std::nullopt,
+                     /*request_capture_id=*/tab);
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?unmarked"),
+                     std::nullopt);
+
+  StopWarcCaptureAndWait(service(), tab);
+  const std::string archive = ReadArchive(tab_path);
+  EXPECT_NE(archive.find("GET /echoquery?navigation "), std::string::npos);
+  EXPECT_EQ(archive.find("unmarked"), std::string::npos);
+}
+
+// The id a renderer's factory carries outlives the capture it named. Once that
+// capture stops, its requests are treated as unmarked, not lost and not
+// written into a closed file.
+TEST_F(NetworkServiceTestWithService, StoppedWarcCaptureFallsBackToSession) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath session_path =
+      temp_dir.GetPath().AppendASCII("session.warc");
+  const base::FilePath tab_path = temp_dir.GetPath().AppendASCII("tab.warc");
+  const auto tab = base::UnguessableToken::Create();
+
+  network_service_->StartWarcRecording(
+      OpenWarcForWriting(session_path), "session.warc",
+      /*compress_records=*/false, base::File(), /*redact_credentials=*/true);
+  StartWarcCaptureAndWait(service(), tab, tab_path);
+  CreateNetworkContext();
+
+  LoadForWarcCapture(context(),
+                     test_server()->GetURL("/echoquery?while-capturing"), tab);
+  StopWarcCaptureAndWait(service(), tab);
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?after-stop"),
+                     tab);
+
+  const std::string archive = ReadArchive(tab_path);
+  Shutdown();
+  task_environment_.RunUntilIdle();
+  const std::string session = ReadArchive(session_path);
+
+  EXPECT_NE(archive.find("while-capturing"), std::string::npos);
+  EXPECT_EQ(archive.find("after-stop"), std::string::npos);
+  EXPECT_NE(session.find("GET /echoquery?after-stop "), std::string::npos);
+  EXPECT_EQ(session.find("while-capturing"), std::string::npos);
+}
+
+// Without a session-wide recording, a request from a tab nobody is archiving
+// is written nowhere, even while another tab's capture runs.
+TEST_F(NetworkServiceTestWithService, WarcCaptureLeavesOtherTabsUnrecorded) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath tab_path = temp_dir.GetPath().AppendASCII("tab.warc");
+  const auto tab = base::UnguessableToken::Create();
+
+  StartWarcCaptureAndWait(service(), tab, tab_path);
+  CreateNetworkContext();
+
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?other-tab"),
+                     base::UnguessableToken::Create());
+
+  StopWarcCaptureAndWait(service(), tab);
+  EXPECT_EQ(ReadArchive(tab_path).find("other-tab"), std::string::npos);
+}
+
+// Stopping a capture that is not running still answers, so a caller waiting on
+// the reply is never left waiting.
+TEST_F(NetworkServiceTestWithService, StopUnknownWarcCaptureReplies) {
+  StopWarcCaptureAndWait(service(), base::UnguessableToken::Create());
+}
+
 class NetworkServiceTestWithServiceMockTime
     : public NetworkServiceTestWithService {
  public:

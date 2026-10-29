@@ -187,6 +187,14 @@ struct TrustedUrlRequestParams {
   // preflight. No new consumers should use this. It will be removed once the
   // deprecated Protected Audiences code is deleted.
   bool is_ad_auction_trusted_signals_request = false;
+
+  // The WARC capture this request belongs to, set by the browser for a
+  // navigation in a tab that is being archived on its own. The network service
+  // records the exchange into that capture rather than into the session-wide
+  // one, if any. Set on navigations only; a frame's subresources carry the
+  // same id in their URLLoaderFactoryParams, since a renderer cannot be
+  // trusted to say which capture its requests belong to.
+  mojo_base.mojom.UnguessableToken? warc_capture_id;
 };
 
 // Options that may only be set on URLRequests which are related to WebBundle.

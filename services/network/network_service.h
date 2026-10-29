@@ -183,6 +183,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   void SetWarcRotationPolicy(
       mojo::PendingRemote<mojom::WarcOutputProvider> provider,
       uint64_t max_file_bytes) override;
+  void StartWarcCapture(const base::UnguessableToken& capture_id,
+                        base::File file,
+                        const std::string& filename,
+                        bool compress_records,
+                        base::File spill_file,
+                        bool redact_credentials,
+                        StartWarcCaptureCallback callback) override;
+  void StopWarcCapture(const base::UnguessableToken& capture_id,
+                       StopWarcCaptureCallback callback) override;
   void CreateNetworkContext(
       mojo::PendingReceiver<mojom::NetworkContext> receiver,
       mojom::NetworkContextParamsPtr params) override;
@@ -427,6 +436,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   // Null unless WARC recording is active.
   WarcRecorder* warc_recorder() { return warc_recorder_.get(); }
 
+  // The recorder a request belongs in: the capture named by `capture_id` while
+  // it is running, otherwise the session-wide recording. Null when neither is
+  // recording.
+  WarcRecorder* GetWarcRecorder(
+      const std::optional<base::UnguessableToken>& capture_id);
+
   base::WeakPtr<NetworkService> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }
@@ -617,11 +632,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
 
 #if BUILDFLAG(IS_LINUX)
   mojo::Remote<mojom::GssapiLibraryLoadObserver> gssapi_library_load_observer_;
+#endif  // BUILDFLAG(IS_LINUX)
 
   // Opens the files automatic rotation continues into. Held for the life of the
   // recording, since it is asked once per file rather than once per session.
   mojo::Remote<mojom::WarcOutputProvider> warc_output_provider_;
-#endif  // BUILDFLAG(IS_LINUX)
 
   bool exclusive_cookie_database_locking_ = true;
 
@@ -633,6 +648,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
 
   // Set only while WARC recording is active.
   std::unique_ptr<WarcRecorder> warc_recorder_;
+
+  // Captures started with StartWarcCapture, each recording only the requests
+  // marked with its id. Removed as soon as one is stopped, so that requests
+  // still carrying the id fall back to `warc_recorder_` from then on.
+  std::map<base::UnguessableToken, std::unique_ptr<WarcRecorder>>
+      warc_captures_;
 
 #if BUILDFLAG(IS_MAC)
   bool use_mock_url_session_url_loader_for_testing_{false};

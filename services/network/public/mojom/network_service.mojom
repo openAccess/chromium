@@ -316,6 +316,32 @@ interface NetworkService {
   SetWarcRotationPolicy(pending_remote<WarcOutputProvider> provider,
                         uint64 max_file_bytes);
 
+  // Starts a WARC capture of its own, recording only the requests that carry
+  // |capture_id| -- in their URLLoaderFactoryParams, or for a navigation in its
+  // TrustedUrlRequestParams. This is how one tab is archived without the rest
+  // of the browser: the browser marks that tab's requests, and only those are
+  // written here. Any number of captures can run at once, beside each other
+  // and beside the session-wide recording StartWarcRecording begins; a request
+  // is written to exactly one of them.
+  //
+  // The other arguments mean what they do for StartWarcRecording. The reply
+  // is sent once the capture is ready, so that a navigation started after it
+  // is certain to be recorded.
+  //
+  // Starting a capture under an id already in use replaces nothing: the call
+  // is ignored, and still replied to.
+  StartWarcCapture(mojo_base.mojom.UnguessableToken capture_id,
+                   mojo_base.mojom.File file, string filename,
+                   bool compress_records, mojo_base.mojom.File? spill_file,
+                   bool redact_credentials) => ();
+
+  // Ends the capture StartWarcCapture began under |capture_id|. Requests that
+  // carry the id afterwards go to the session-wide recording, if any, as
+  // though they carried none. The reply is sent once the capture's file is
+  // written, flushed and closed -- the point at which it is safe to read, index
+  // or package. Replies at once if no such capture is running.
+  StopWarcCapture(mojo_base.mojom.UnguessableToken capture_id) => ();
+
   // Creates a new network context with the given parameters.
   // This method is not used on Desktop (excluding Android Desktop) when the
   // CreateNetworkContextNonBlocking feature is enabled. In those environments,

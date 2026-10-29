@@ -21,6 +21,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/runtime_feature_state/runtime_feature_state_document_data.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/child_process_id_util.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_switches.h"
@@ -187,7 +188,7 @@ URLLoaderFactoryParamsHelper::CreateForFrame(
   const bool has_effective_top_frame_for_storage_partitioning =
       GetContentClient()->browser()->GetEffectiveTopFrameForPartitioning(
           frame) != nullptr;
-  return CreateParams(
+  network::mojom::URLLoaderFactoryParamsPtr params = CreateParams(
       process,
       frame_origin,  // origin
       frame_origin,  // request_initiator_origin_lock
@@ -209,6 +210,12 @@ URLLoaderFactoryParamsHelper::CreateForFrame(
       /*is_for_service_worker=*/false, network_restrictions_id,
       has_effective_top_frame_for_storage_partitioning,
       frame->IsOutermostMainFrame());
+  // A frame in a tab being archived on its own records what it loads into that
+  // tab's capture. The renderer cannot be asked which capture its requests
+  // belong to, so the factory it is given says so instead.
+  params->warc_capture_id = GetContentClient()->browser()->GetWarcCaptureId(
+      WebContents::FromRenderFrameHost(frame));
+  return params;
 }
 
 // static

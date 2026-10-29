@@ -879,6 +879,8 @@ source_set("core") {
     "wacz_replay.h",
     "warc_page_recorder.cc",
     "warc_page_recorder.h",
+    "warc_tab_capture.cc",
+    "warc_tab_capture.h",
   ]
 
   configs += [

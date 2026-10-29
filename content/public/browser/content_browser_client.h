@@ -24,6 +24,7 @@
 #include "base/supports_user_data.h"
 #include "base/time/time.h"
 #include "base/types/strong_alias.h"
+#include "base/unguessable_token.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
@@ -597,6 +598,16 @@ class CONTENT_EXPORT ContentBrowserClient {
       bool is_for_isolated_world,
       bool is_for_service_worker,
       network::mojom::URLLoaderFactoryParams* factory_params);
+
+  // The WARC capture that `web_contents` is being archived into on its own, if
+  // any -- one started with network::mojom::NetworkService::StartWarcCapture.
+  // The tab's navigations and the factories its frames load subresources
+  // through are marked with it, so the network service records what the tab
+  // loads into that capture and nothing else. Asked when a navigation starts
+  // and when a frame's factories are made, so a change applies from the next
+  // navigation on.
+  virtual std::optional<base::UnguessableToken> GetWarcCaptureId(
+      WebContents* web_contents);
 
   // Returns a list of additional WebUI schemes, if any.  These additional
   // schemes act as aliases to the chrome: scheme.  The additional schemes may

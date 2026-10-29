@@ -520,6 +520,10 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder(
   return recorder;
 }
 
+bool WarcRecorder::ClaimRangeCompletion(const GURL& url) {
+  return range_completions_.insert(url).second;
+}
+
 void WarcRecorder::SetSpillFile(base::File file) {
   spill_file_ = std::move(file);
 }

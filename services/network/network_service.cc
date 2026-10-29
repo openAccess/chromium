@@ -1445,6 +1445,80 @@ void NetworkService::SetWarcRotationPolicy(
           base::Unretained(this)));
 }
 
+void NetworkService::StartWarcCapture(const base::UnguessableToken& capture_id,
+                                      base::File file,
+                                      const std::string& filename,
+                                      bool compress_records,
+                                      base::File spill_file,
+                                      bool redact_credentials,
+                                      StartWarcCaptureCallback callback) {
+  if (!file.IsValid()) {
+    LOG(ERROR) << "WARC capture not started: file is not open for writing.";
+    std::move(callback).Run();
+    return;
+  }
+  if (warc_captures_.contains(capture_id)) {
+    // Two captures under one id would leave no way to tell which a request
+    // belongs to. The first keeps it.
+    std::move(callback).Run();
+    return;
+  }
+
+  auto recorder = std::make_unique<WarcRecorder>(
+      std::move(file), WarcRecorder::Limits(),
+      compress_records ? warc::WarcWriter::Compression::kGzipPerRecord
+                       : warc::WarcWriter::Compression::kNone,
+      redact_credentials);
+  if (spill_file.IsValid()) {
+    recorder->SetSpillFile(std::move(spill_file));
+  }
+  recorder->WriteWarcinfo(filename);
+  warc_captures_.emplace(capture_id, std::move(recorder));
+
+  // Replying only now is what lets the browser start the navigation the
+  // capture is for and know it will be recorded: the request arrives on
+  // another pipe, which nothing orders against this one.
+  std::move(callback).Run();
+}
+
+void NetworkService::StopWarcCapture(const base::UnguessableToken& capture_id,
+                                     StopWarcCaptureCallback callback) {
+  auto it = warc_captures_.find(capture_id);
+  if (it == warc_captures_.end()) {
+    std::move(callback).Run();
+    return;
+  }
+
+  // Out of the map at once, so that a request starting from here on is no
+  // longer recorded into a capture that is on its way out.
+  std::unique_ptr<WarcRecorder> recorder = std::move(it->second);
+  warc_captures_.erase(it);
+
+  // Rotating to no file closes the archive and reports when it is on disk. The
+  // recorder rides along in the reply and goes with it: the reply is posted
+  // back here, so it is not destroyed from inside its own call.
+  WarcRecorder* raw = recorder.get();
+  raw->Rotate(base::File(), std::string(),
+              base::BindOnce(
+                  [](std::unique_ptr<WarcRecorder> recorder,
+                     StopWarcCaptureCallback callback) {
+                    recorder.reset();
+                    std::move(callback).Run();
+                  },
+                  std::move(recorder), std::move(callback)));
+}
+
+WarcRecorder* NetworkService::GetWarcRecorder(
+    const std::optional<base::UnguessableToken>& capture_id) {
+  if (capture_id) {
+    auto it = warc_captures_.find(*capture_id);
+    if (it != warc_captures_.end()) {
+      return it->second.get();
+    }
+  }
+  return warc_recorder_.get();
+}
+
 std::unique_ptr<DevtoolsDurableMessageWriter>
 NetworkService::MaybeCreateDurableMessageWriter(
     const base::UnguessableToken& throttling_profile_id,

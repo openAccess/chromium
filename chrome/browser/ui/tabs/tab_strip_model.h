@@ -831,6 +831,10 @@ class TabStripModel {
   // supplied to `ExecuteContextMenuCommand`.
   bool WillContextMenuPin(int index);
 
+  // Returns true if 'CommandToggleWarcCapture' will start archiving rather
+  // than stop. `index` is the index supplied to `ExecuteContextMenuCommand`.
+  bool WillContextMenuStartWarcCapture(int index);
+
   // Returns true if 'CommandToggleGrouped' will group. `index` is the index
   // supplied to `ExecuteContextMenuCommand`.
   bool WillContextMenuGroup(int index);

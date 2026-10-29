@@ -277,6 +277,14 @@ std::unique_ptr<network::ResourceRequest> CreateResourceRequest(
       std::move(accept_ch_frame_observer);
   new_request->trusted_params->allow_cookies_from_browser =
       request_info.allow_cookies_from_browser;
+  // A navigation in a tab being archived on its own is recorded into that
+  // tab's capture. The frame it commits gets factories marked the same way, so
+  // the document and what it goes on to load land in one place.
+  if (frame_tree_node) {
+    new_request->trusted_params->warc_capture_id =
+        GetContentClient()->browser()->GetWarcCaptureId(
+            WebContentsImpl::FromFrameTreeNode(frame_tree_node));
+  }
   new_request->is_outermost_main_frame = request_info.is_outermost_main_frame;
   new_request->request_initiator = request_info.common_params->initiator_origin;
   new_request->headers.AddHeadersFromString(request_info.begin_params->headers);

@@ -324,7 +324,14 @@ BASE_FEATURE(kIntegrityPolicyScript, base::FEATURE_ENABLED_BY_DEFAULT);
 // Enables content decoding in the renderer process.
 // See https://crbug.com/391950057 and this doc for more details.
 // https://docs.google.com/document/d/1LwgPlrtQtUhGz_ilTsRun-7o4TuHo9jbXll6FRq-dKk/edit?usp=sharing
-BASE_FEATURE(kRendererSideContentDecoding, base::FEATURE_DISABLED_BY_DEFAULT);
+//
+// Enabled by default in this build because WARC capture depends on it: a
+// response record must hold the body exactly as it arrived, which the network
+// service only leaves undecoded when the client decodes it. --warc-output
+// could switch it on from the command line, but a tab can be archived from its
+// context menu at any point in a session, and a feature cannot be switched on
+// after startup.
+BASE_FEATURE(kRendererSideContentDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
 // When non-zero, a Mojo data pipe of this size will be used between the
 // decoding thread and the data receiving thread.
 BASE_FEATURE_PARAM(int,

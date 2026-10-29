@@ -100,6 +100,9 @@ bool StructTraits<network::mojom::TrustedUrlRequestParamsDataView,
   }
   out->is_ad_auction_trusted_signals_request =
       data.is_ad_auction_trusted_signals_request();
+  if (!data.ReadWarcCaptureId(&out->warc_capture_id)) {
+    return false;
+  }
   return true;
 }
 
