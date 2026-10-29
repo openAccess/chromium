@@ -8,6 +8,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/platform_locale_settings.h"
@@ -74,6 +75,14 @@ void CreateContentFaviconDriverForWebContents(
   if (ContentFaviconDriver::FromWebContents(web_contents))
     return;
 
+  // A replay tab gets no FaviconService: its icons come from the archive, as
+  // everything else in it does, and are neither stored in the profile's
+  // Favicons database nor looked up there -- where the icon on record is the
+  // live site's, not the one the archive holds. Without a service the handler
+  // downloads each icon through the frame, which the archive answers.
+  if (wacz_replay::IsReplayTab(web_contents)) {
+    return ContentFaviconDriver::CreateForWebContents(web_contents, nullptr);
+  }
   Profile* original_profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext())
           ->GetOriginalProfile();

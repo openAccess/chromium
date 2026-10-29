@@ -39,6 +39,7 @@ source_set("impl") {
     "//chrome/browser/sync",
     "//chrome/browser/ui",
     "//chrome/browser/ui/webui:chrome_web_ui_controller_factory",
+    "//chrome/browser/wacz_replay:partition",
     "//components/favicon/core:history_implementation",
     "//components/image_fetcher/core",
     "//components/password_manager/content/common",

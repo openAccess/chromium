@@ -21,6 +21,7 @@
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
@@ -32,6 +33,8 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/navigation_simulator.h"
@@ -119,6 +122,19 @@ class HistoryTabHelperTest : public ChromeRenderViewHostTestHarness {
 
   content::WebContentsTester* web_contents_tester() {
     return content::WebContentsTester::For(web_contents());
+  }
+
+  bool IsInHistory(const GURL& url) {
+    bool found = false;
+    base::RunLoop loop;
+    history_service_->QueryURL(
+        url, base::BindLambdaForTesting([&](history::QueryURLResult result) {
+          found = result.success;
+          loop.Quit();
+        }),
+        &tracker_);
+    loop.Run();
+    return found;
   }
 
   std::string QueryPageTitleFromHistory(const GURL& url) {
@@ -259,6 +275,36 @@ TEST_F(HistoryTabHelperTest, NoOnUpdatedHistoryForNavigationOn404) {
                                             testing::_))
       .Times(0);
   navigation_simulator->Commit();
+}
+
+// A replay tab's visits are to an archive, and stay out of the profile's
+// history -- the visit and its title both. An ordinary tab's go in as they
+// always did.
+TEST_F(HistoryTabHelperTest, ReplayTabIsNotRecorded) {
+  const GURL archived_url("https://archived.example.org/");
+  std::unique_ptr<content::WebContents> replay_tab =
+      content::WebContentsTester::CreateTestWebContents(
+          profile(), content::SiteInstance::CreateForFixedStoragePartition(
+                         profile(), archived_url,
+                         content::StoragePartitionConfig::Create(
+                             profile(), wacz_replay::kPartitionDomain,
+                             "archive", /*in_memory=*/true)));
+  ASSERT_TRUE(wacz_replay::IsReplayTab(replay_tab.get()));
+  HistoryTabHelper::CreateForWebContents(replay_tab.get());
+  HistoryTabHelper::FromWebContents(replay_tab.get())
+      ->SetForceEligibleTabForTesting(true);
+  content::WebContentsTester::For(replay_tab.get())
+      ->NavigateAndCommit(archived_url);
+  replay_tab->UpdateTitleForEntry(
+      replay_tab->GetController().GetLastCommittedEntry(), u"archived");
+
+  // The control, and -- since history answers in order -- the proof that the
+  // replay tab's visit had its chance to land first.
+  const GURL live_url("https://live.example.org/");
+  web_contents_tester()->NavigateAndCommit(live_url);
+  EXPECT_TRUE(IsInHistory(live_url));
+
+  EXPECT_FALSE(IsInHistory(archived_url));
 }
 
 TEST_F(HistoryTabHelperTest, ShouldUpdateTitleInHistory) {

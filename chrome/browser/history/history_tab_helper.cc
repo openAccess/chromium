@@ -17,6 +17,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_host/chrome_navigation_ui_data.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "components/actor/core/task_id.h"
 #include "components/history/content/browser/history_context_helper.h"
 #include "components/history/core/browser/history_constants.h"
@@ -645,6 +646,13 @@ history::HistoryService* HistoryTabHelper::GetHistoryService() {
   Profile* profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
   if (profile->IsOffTheRecord()) {
+    return nullptr;
+  }
+  // A replay tab's visits are to an archive, not to the web, and its pages are
+  // no part of the profile's history -- nor of what history feeds: Top Sites,
+  // visited links, and the segmentation platform's URL table. As for an
+  // off-the-record profile, everything this helper writes goes through here.
+  if (wacz_replay::IsReplayTab(web_contents())) {
     return nullptr;
   }
 

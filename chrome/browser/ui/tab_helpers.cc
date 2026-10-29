@@ -624,7 +624,11 @@ void TabHelpers::AttachTabHelpers(WebContents* web_contents,
         web_contents);
   }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
-  if (site_engagement::SiteEngagementService::IsEnabled()) {
+  // Not for a replay tab: engagement is scored per origin and kept in the
+  // profile, so time spent on an archived page would count toward the live
+  // site -- and record on disk that it was visited.
+  if (site_engagement::SiteEngagementService::IsEnabled() &&
+      !wacz_replay::IsReplayTab(web_contents)) {
     site_engagement::SiteEngagementService::Helper::CreateForWebContents(
         web_contents,
         prerender::NoStatePrefetchManagerFactory::GetForBrowserContext(
