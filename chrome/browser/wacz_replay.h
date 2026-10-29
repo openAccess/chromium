@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -62,10 +63,6 @@ bool IsEnabled();
 content::StoragePartitionConfig ReplayPartition(
     content::BrowserContext* browser_context,
     const std::string& moment);
-
-// Whether `config` is a partition returned by ReplayPartition() -- for any
-// archive, since what follows from it is the same for all of them.
-bool IsReplayPartition(const content::StoragePartitionConfig& config);
 
 // The moment a replay partition serves, as an index writes it: the inverse of
 // ReplayPartition(). Empty for the earliest capture, or for a partition that

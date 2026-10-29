@@ -7,6 +7,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_common_utils.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/common/url_constants.h"
 #include "components/sessions/content/content_live_tab.h"
 #include "components/tab_groups/tab_group_id.h"
@@ -89,6 +90,19 @@ ChromeTabRestoreServiceClient::FindLiveTabContextWithGroup(
 
 bool ChromeTabRestoreServiceClient::ShouldTrackURLForRestore(const GURL& url) {
   return ::ShouldTrackURLForRestore(url);
+}
+
+bool ChromeTabRestoreServiceClient::ShouldTrackLiveTabForRestore(
+    sessions::LiveTab* tab) {
+#if BUILDFLAG(IS_ANDROID)
+  return true;
+#else
+  // A replay tab reopened from the closed-tab list would be an ordinary tab on
+  // the archived URL, and go to the live site for it. The archive it came from
+  // is no part of the profile, and neither is the tab.
+  return !wacz_replay::IsReplayTab(
+      &static_cast<sessions::ContentLiveTab*>(tab)->GetWebContents());
+#endif
 }
 
 std::string ChromeTabRestoreServiceClient::GetExtensionAppIDForTab(

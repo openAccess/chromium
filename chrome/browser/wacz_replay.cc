@@ -39,10 +39,6 @@ namespace wacz_replay {
 
 namespace {
 
-// The domain every replay partition lives in, whatever archive it holds. It is
-// what IsReplayPartition() recognises, so one test answers for all of them.
-constexpr char kPartitionDomain[] = "wacz-replay";
-
 // Between the archive's key and the moment in a partition's name. Neither
 // half can contain it: one is hex and the other digits.
 constexpr char kMomentSeparator = '-';
@@ -166,10 +162,6 @@ content::StoragePartitionConfig ReplayPartition(
       base::StrCat({ArchiveKey(ArchivePath()), std::string(1, kMomentSeparator),
                     warc::ToIndexTimestamp(moment)}),
       /*in_memory=*/true);
-}
-
-bool IsReplayPartition(const content::StoragePartitionConfig& config) {
-  return config.partition_domain() == kPartitionDomain;
 }
 
 std::string ReplayMoment(const content::StoragePartitionConfig& config) {

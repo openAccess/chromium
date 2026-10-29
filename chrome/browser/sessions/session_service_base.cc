@@ -40,6 +40,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/sessions/content/content_serialized_navigation_builder.h"
 #include "components/sessions/content/session_tab_helper.h"
@@ -608,6 +609,14 @@ void SessionServiceBase::BuildCommandsForTab(
     IdToRange* tab_to_available_range) {
   DCHECK(tab);
   DCHECK(window_id.is_valid());
+
+  // A replay tab is not part of the session (see
+  // session_tab_helper_factory.cc).
+  // What the window has recorded of it otherwise -- its index, its window --
+  // names a tab with no navigations, which restore leaves out.
+  if (wacz_replay::IsReplayTab(tab)) {
+    return;
+  }
 
   sessions::SessionTabHelper* session_tab_helper =
       sessions::SessionTabHelper::FromWebContents(tab);

@@ -29,6 +29,7 @@
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/sessions/tab_restore_service_load_waiter.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/chrome_render_view_test.h"
@@ -51,6 +52,8 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/render_view_test.h"
 #include "content/public/test/test_utils.h"
@@ -415,6 +418,33 @@ class TabRestoreServiceImplWithMockClientTest
   raw_ptr<MockTabRestoreServiceClient, DanglingUntriaged>
       mock_tab_restore_service_client_;
 };
+
+// A replay tab is left out of the closed-tab list. Reopened, it would be an
+// ordinary tab on the archived URL, and would fetch it from the live site.
+TEST_F(TabRestoreServiceImplTest, ReplayTabIsNotRecorded) {
+  const GURL archived_url("https://example.org/archived");
+  std::unique_ptr<content::WebContents> replay_tab =
+      content::WebContentsTester::CreateTestWebContents(
+          profile(), content::SiteInstance::CreateForFixedStoragePartition(
+                         profile(), archived_url,
+                         content::StoragePartitionConfig::Create(
+                             profile(), wacz_replay::kPartitionDomain,
+                             "archive", /*in_memory=*/true)));
+  CreateSessionServiceTabHelper(replay_tab.get());
+  content::WebContentsTester::For(replay_tab.get())
+      ->NavigateAndCommit(archived_url);
+  ASSERT_TRUE(wacz_replay::IsReplayTab(replay_tab.get()));
+
+  service_->CreateHistoricalTab(
+      sessions::ContentLiveTab::GetOrCreateForWebContents(replay_tab.get()),
+      -1);
+  EXPECT_TRUE(service_->entries().empty());
+
+  // The control: an ordinary tab is recorded as it always was.
+  AddThreeNavigations();
+  service_->CreateHistoricalTab(live_tab(), -1);
+  EXPECT_EQ(1U, service_->entries().size());
+}
 
 TEST_F(TabRestoreServiceImplTest, Basic) {
   AddThreeNavigations();

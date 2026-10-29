@@ -80,6 +80,7 @@ source_set("impl") {
   deps = [
     "//chrome/browser/glic",
     "//chrome/browser/lifetime",
+    "//chrome/browser/wacz_replay:partition",
   ]
 
   if (enable_extensions) {
@@ -261,6 +262,7 @@ source_set("unit_tests") {
       "tab_restore_service_unittest.cc",
     ]
     deps += [
+      "//chrome/browser/wacz_replay:partition",
       "//components/policy/core/browser",
       "//components/policy/core/common:common_constants",
     ]

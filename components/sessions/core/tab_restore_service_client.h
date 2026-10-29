@@ -72,6 +72,12 @@ class SESSIONS_EXPORT TabRestoreServiceClient {
   // Returns whether a given URL should be tracked for restoring.
   virtual bool ShouldTrackURLForRestore(const GURL& url) = 0;
 
+  // Returns whether `tab` should be tracked for restoring at all, whatever its
+  // URLs. A tab that should not is left out of every entry -- a closed tab, a
+  // closed window or group -- as though it had no navigations. True by
+  // default.
+  virtual bool ShouldTrackLiveTabForRestore(LiveTab* tab);
+
   // Returns the extension app ID for the given LiveTab, or the empty string
   // if there is no such ID (e.g., if extensions are not supported by the
   // embedder).

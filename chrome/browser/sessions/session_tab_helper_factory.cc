@@ -14,6 +14,7 @@
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/sessions/session_service_lookup.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "content/public/browser/web_contents.h"
 #endif
 
@@ -26,6 +27,12 @@ namespace {
 #if BUILDFLAG(ENABLE_SESSION_SERVICE)
 sessions::SessionTabHelperDelegate* GetSessionTabHelperDelegate(
     content::WebContents* web_contents) {
+  // A replay tab has no delegate, so nothing it does -- a navigation, a
+  // pruned history -- is written to the session. Restored, it would come back
+  // as an ordinary tab on the archived URL and fetch it from the live site.
+  if (wacz_replay::IsReplayTab(web_contents)) {
+    return nullptr;
+  }
   // With AppSessionService, we now need to know if the WebContents
   // belongs to an AppSessionService or SessionService.
   if (IsRelevantToAppSessionService(web_contents)) {

@@ -100,7 +100,7 @@
 #include "chrome/browser/ui/views/tab_sharing/tab_capture_contents_border_helper.h"
 #include "chrome/browser/v8_compile_hints/v8_compile_hints_tab_helper.h"
 #include "chrome/browser/vr/vr_tab_helper.h"
-#include "chrome/browser/wacz_replay.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
@@ -153,8 +153,6 @@
 #include "components/webapps/browser/installable/installable_manager.h"
 #include "components/webapps/browser/installable/ml_installability_promoter.h"
 #include "components/zoom/zoom_controller.h"
-#include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/buildflags.h"
 #include "extensions/buildflags/buildflags.h"
@@ -556,13 +554,9 @@ void TabHelpers::AttachTabHelpers(WebContents* web_contents,
       HostContentSettingsMapFactory::GetForProfile(profile));
   // Not for a replay tab: the predictor preconnects each navigation's origins,
   // live, and learns them into the profile on disk, where an archived visit
-  // has no business being remembered. A tab's partition is fixed when it is
-  // made, so a tab that is not a replay tab now never becomes one.
+  // has no business being remembered.
   if (predictors::LoadingPredictorFactory::GetForProfile(profile) &&
-      !wacz_replay::ServesFromArchive(web_contents->GetPrimaryMainFrame(),
-                                      web_contents->GetPrimaryMainFrame()
-                                          ->GetProcess()
-                                          ->GetDeprecatedID())) {
+      !wacz_replay::IsReplayTab(web_contents)) {
     predictors::LoadingPredictorTabHelper::CreateForWebContents(web_contents);
   }
   PrefsTabHelper::CreateForWebContents(web_contents);

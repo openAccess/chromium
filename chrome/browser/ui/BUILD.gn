@@ -825,6 +825,7 @@ static_library("ui") {
     "//chrome/browser/v8_compile_hints",
     "//chrome/browser/vr",
     "//chrome/browser/vr:impl",
+    "//chrome/browser/wacz_replay:partition",
     "//chrome/browser/webauthn",
     "//chrome/browser/webauthn:impl",
     "//components/autofill/core/common:credit_card_number_validation",

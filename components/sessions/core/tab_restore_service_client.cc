@@ -8,6 +8,10 @@ namespace sessions {
 
 TabRestoreServiceClient::~TabRestoreServiceClient() = default;
 
+bool TabRestoreServiceClient::ShouldTrackLiveTabForRestore(LiveTab* tab) {
+  return true;
+}
+
 void TabRestoreServiceClient::OnTabRestored(const GURL& url) {}
 
 }  // namespace sessions

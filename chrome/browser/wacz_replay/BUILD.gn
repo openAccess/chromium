@@ -1,0 +1,15 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Whether a partition or a tab is a replay one, apart from the rest of replay
+# so that what only needs to tell -- tab helpers, session restore -- can ask
+# without depending on //chrome/browser.
+source_set("partition") {
+  sources = [
+    "replay_partition.cc",
+    "replay_partition.h",
+  ]
+
+  public_deps = [ "//content/public/browser" ]
+}

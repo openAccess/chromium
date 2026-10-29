@@ -1448,7 +1448,11 @@ void TabRestoreServiceHelper::PopulateTab(Tab* tab,
                                           LiveTabContext* context,
                                           LiveTab* live_tab) {
   tab->current_navigation_index = 0;
-  if (!live_tab->IsInitialBlankNavigation() && live_tab->GetEntryCount() > 0) {
+  // Every route a tab takes into an entry comes through here, and each drops
+  // a tab left with no navigations, so this one check keeps it out of all of
+  // them.
+  if (client_->ShouldTrackLiveTabForRestore(live_tab) &&
+      !live_tab->IsInitialBlankNavigation() && live_tab->GetEntryCount() > 0) {
     AddSerializedNavigationEntries(
         live_tab, AddBehavior::kCurrentAndPreceedingEntries, tab->navigations);
     if (!tab->navigations.empty()) {

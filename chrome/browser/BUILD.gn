@@ -1113,6 +1113,7 @@ source_set("core") {
     "//chrome/browser/upgrade_detector",
     "//chrome/browser/usb",
     "//chrome/browser/vr",
+    "//chrome/browser/wacz_replay:partition",
     "//chrome/browser/webapps",
     "//chrome/browser/webauthn",
     "//chrome/browser/webauthn:chrome_web_authentication_delegate",
