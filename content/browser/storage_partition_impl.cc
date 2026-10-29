@@ -3486,6 +3486,10 @@ void StoragePartitionImpl::InitNetworkContext() {
   GetContentClient()->browser()->ConfigureNetworkContextParams(
       browser_context_, is_in_memory(), relative_partition_path_,
       context_params.get(), cert_verifier_creation_params.get());
+  if (GetContentClient()->browser()->ShouldDenyNetworkAccess(browser_context_,
+                                                             config_)) {
+    context_params->deny_network_access = true;
+  }
   // Should be initialized with existing per-profile CORS access lists.
   DCHECK(context_params->cors_origin_access_list.empty())
       << "NetworkContextParams::cors_origin_access_list should be populated "

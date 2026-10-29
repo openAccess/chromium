@@ -1187,6 +1187,12 @@ void ContentBrowserClient::ConfigureNetworkContextParams(
   network_context_params->accept_language = "en-us,en";
 }
 
+bool ContentBrowserClient::ShouldDenyNetworkAccess(
+    BrowserContext* browser_context,
+    const StoragePartitionConfig& config) {
+  return false;
+}
+
 std::vector<base::FilePath>
 ContentBrowserClient::GetNetworkContextsParentDirectory() {
   return {};

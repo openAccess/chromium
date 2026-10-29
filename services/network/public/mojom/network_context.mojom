@@ -667,6 +667,15 @@ struct NetworkContextParams {
   // do not have an associated `URLLoaderFactory`.
   pending_remote<URLLoaderNetworkServiceObserver>?
       device_bound_sessions_network_observer;
+
+  // If true, nothing made through this context reaches the network: no name
+  // is resolved, so no connection is made to a host however it is asked for,
+  // and the entry points that take addresses instead of names refuse with
+  // ERR_NETWORK_ACCESS_DENIED. Its storage -- cookies, cache, and the rest --
+  // works as usual. For a context whose content comes from somewhere else
+  // entirely, such as an archive being replayed, where a request that reaches
+  // the live network is a leak rather than a fallback.
+  bool deny_network_access = false;
 };
 
 struct NetworkConditions {

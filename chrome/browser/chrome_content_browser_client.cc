@@ -6935,6 +6935,19 @@ void ChromeContentBrowserClient::ConfigureNetworkContextParams(
   }
 }
 
+// A replay partition is served out of its archive, by the factory
+// WillCreateURLLoaderFactory() puts in front of every frame and worker. What
+// does not come through a factory -- a preconnect, a dns-prefetch, a socket
+// for WebRTC, a fetch the browser makes on the partition's behalf -- would
+// otherwise go to its network context and out to the live site. Denying that
+// context the network is what makes a replay fail closed on paths nobody
+// thought to list.
+bool ChromeContentBrowserClient::ShouldDenyNetworkAccess(
+    content::BrowserContext* browser_context,
+    const content::StoragePartitionConfig& config) {
+  return wacz_replay::IsReplayPartition(config);
+}
+
 std::vector<base::FilePath>
 ChromeContentBrowserClient::GetNetworkContextsParentDirectory() {
   DCHECK(!network_contexts_parent_directory_.empty());

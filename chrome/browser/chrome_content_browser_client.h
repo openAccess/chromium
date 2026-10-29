@@ -755,6 +755,9 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
       network::mojom::NetworkContextParams* network_context_params,
       cert_verifier::mojom::CertVerifierCreationParams*
           cert_verifier_creation_params) override;
+  bool ShouldDenyNetworkAccess(
+      content::BrowserContext* browser_context,
+      const content::StoragePartitionConfig& config) override;
   std::vector<base::FilePath> GetNetworkContextsParentDirectory() override;
   base::DictValue GetNetLogConstants() override;
   bool AllowRenderingMhtmlOverHttp(

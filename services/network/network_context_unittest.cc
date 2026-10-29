@@ -7152,6 +7152,174 @@ TEST_F(NetworkContextTest, PreconnectMax) {
   ASSERT_EQ(num_sockets, max_num_sockets);
 }
 
+mojom::NetworkContextParamsPtr CreateNetworkDeniedContextParams() {
+  mojom::NetworkContextParamsPtr params =
+      CreateNetworkContextParamsForTesting();
+  params->deny_network_access = true;
+  return params;
+}
+
+// Resolves `host` through `network_context`, or through `resolver` if given,
+// and returns the error.
+int ResolveForTesting(NetworkContext* network_context,
+                      const std::string& host,
+                      mojom::HostResolver* resolver = nullptr) {
+  base::RunLoop run_loop;
+  mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+  TestResolveHostClient response_client(&pending_response_client, &run_loop);
+  auto resolve_host = network::mojom::HostResolverHost::NewHostPortPair(
+      net::HostPortPair(host, 80));
+  if (resolver) {
+    resolver->ResolveHost(std::move(resolve_host),
+                          net::NetworkAnonymizationKey(), nullptr,
+                          std::move(pending_response_client));
+  } else {
+    network_context->ResolveHost(std::move(resolve_host),
+                                 net::NetworkAnonymizationKey(), nullptr,
+                                 std::move(pending_response_client));
+  }
+  run_loop.Run();
+  return response_client.result_error();
+}
+
+// A context denied the network fetches nothing, and makes no connection in
+// trying -- not even to a server that is up, on an IP literal that needs no
+// lookup to reach.
+TEST_F(NetworkContextTest, DenyNetworkAccessFetchNeverConnects) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkDeniedContextParams());
+
+  ConnectionListener connection_listener;
+  net::EmbeddedTestServer test_server;
+  test_server.SetConnectionListener(&connection_listener);
+  ASSERT_TRUE(test_server.Start());
+  ASSERT_TRUE(test_server.base_url().HostIsIPAddress());
+
+  ResourceRequest request;
+  request.url = test_server.base_url();
+  std::unique_ptr<TestURLLoaderClient> client =
+      FetchRequest(request, network_context.get());
+
+  EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED, client->completion_status().error_code);
+  EXPECT_EQ(0, connection_listener.GetTotalSocketsSeen());
+}
+
+// A preconnect is the path that takes no URLLoaderFactory, and so the one an
+// embedder serving a partition from elsewhere would not see.
+TEST_F(NetworkContextTest, DenyNetworkAccessPreconnectNeverConnects) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkDeniedContextParams());
+
+  ConnectionListener connection_listener;
+  net::EmbeddedTestServer test_server;
+  test_server.SetConnectionListener(&connection_listener);
+  ASSERT_TRUE(test_server.Start());
+
+  network_context->PreconnectSockets(
+      1, test_server.base_url(), network::mojom::CredentialsMode::kInclude,
+      net::NetworkAnonymizationKey(), GetTestNetworkRestrictionsId(),
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+      std::nullopt, mojo::NullRemote());
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(0, GetSocketPoolInfo(network_context.get(), "idle_socket_count"));
+  EXPECT_EQ(
+      0, GetSocketPoolInfo(network_context.get(), "connecting_socket_count"));
+  EXPECT_EQ(0, connection_listener.GetTotalSocketsSeen());
+}
+
+// No name is resolved, so a dns-prefetch tells no resolver what is being
+// looked at -- including through a resolver with a configuration of its own,
+// which would otherwise be made without the rule that refuses them.
+TEST_F(NetworkContextTest, DenyNetworkAccessResolvesNothing) {
+  // The control: both names resolve without asking DNS, so a context that is
+  // not denied the network resolves them.
+  std::unique_ptr<NetworkContext> open_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+  ASSERT_EQ(net::OK, ResolveForTesting(open_context.get(), "localhost"));
+  ASSERT_EQ(net::OK, ResolveForTesting(open_context.get(), "127.0.0.1"));
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkDeniedContextParams());
+  EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED,
+            ResolveForTesting(network_context.get(), "localhost"));
+  EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED,
+            ResolveForTesting(network_context.get(), "127.0.0.1"));
+
+  mojo::Remote<mojom::HostResolver> resolver;
+  network_context->CreateHostResolver(std::nullopt,
+                                      resolver.BindNewPipeAndPassReceiver());
+  EXPECT_EQ(
+      net::ERR_NAME_NOT_RESOLVED,
+      ResolveForTesting(network_context.get(), "localhost", resolver.get()));
+
+#if !BUILDFLAG(IS_IOS)
+  net::DnsConfigOverrides overrides;
+  overrides.nameservers = std::vector<net::IPEndPoint>{
+      CreateExpectedEndPoint("100.100.100.100", 22)};
+  mojo::Remote<mojom::HostResolver> overridden_resolver;
+  network_context->CreateHostResolver(
+      overrides, overridden_resolver.BindNewPipeAndPassReceiver());
+  EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED,
+            ResolveForTesting(network_context.get(), "localhost",
+                              overridden_resolver.get()));
+#endif  // !BUILDFLAG(IS_IOS)
+}
+
+// The sockets made on addresses rather than names never meet the resolver,
+// so they are refused where they are asked for.
+TEST_F(NetworkContextTest, DenyNetworkAccessRefusesSockets) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkDeniedContextParams());
+
+  ConnectionListener connection_listener;
+  net::EmbeddedTestServer test_server;
+  test_server.SetConnectionListener(&connection_listener);
+  ASSERT_TRUE(test_server.Start());
+  net::AddressList server_addresses;
+  ASSERT_TRUE(test_server.GetAddressList(&server_addresses));
+
+  {
+    base::test::TestFuture<int32_t, const std::optional<net::IPEndPoint>&,
+                           const std::optional<net::IPEndPoint>&,
+                           mojo::ScopedDataPipeConsumerHandle,
+                           mojo::ScopedDataPipeProducerHandle>
+        future;
+    mojo::Remote<mojom::TCPConnectedSocket> socket;
+    network_context->CreateTCPConnectedSocket(
+        std::nullopt, server_addresses,
+        /*tcp_connected_socket_options=*/nullptr,
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+        socket.BindNewPipeAndPassReceiver(), mojo::NullRemote(),
+        future.GetCallback());
+    EXPECT_EQ(net::ERR_NETWORK_ACCESS_DENIED, future.Get<0>());
+  }
+  {
+    base::test::TestFuture<int32_t, const std::optional<net::IPEndPoint>&>
+        future;
+    mojo::Remote<mojom::TCPBoundSocket> socket;
+    network_context->CreateTCPBoundSocket(
+        GetLocalHostWithAnyPort(),
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS),
+        socket.BindNewPipeAndPassReceiver(), future.GetCallback());
+    EXPECT_EQ(net::ERR_NETWORK_ACCESS_DENIED, future.Get<0>());
+  }
+  {
+    mojo::Remote<mojom::UDPSocket> socket;
+    network_context->CreateUDPSocket(socket.BindNewPipeAndPassReceiver(),
+                                     mojo::NullRemote());
+    socket.FlushForTesting();
+    EXPECT_FALSE(socket.is_connected());
+  }
+  {
+    mojo::Remote<mojom::SocketFactory> factory;
+    network_context->CreateSocketFactory(factory.BindNewPipeAndPassReceiver());
+    factory.FlushForTesting();
+    EXPECT_FALSE(factory.is_connected());
+  }
+  EXPECT_EQ(0, connection_listener.GetTotalSocketsSeen());
+}
+
 // Make sure preconnects for the same URL but with different network isolation
 // keys are not merged.
 TEST_F(NetworkContextTest, PreconnectNetworkIsolationKey) {

@@ -1140,8 +1140,17 @@ void NetworkContext::SetClient(
   client_.Bind(std::move(client));
 }
 
+bool NetworkContext::IsNetworkAccessDenied() const {
+  return params_ && params_->deny_network_access;
+}
+
 void NetworkContext::CreateSocketFactory(
     mojo::PendingReceiver<mojom::SocketFactory> receiver) {
+  // Its sockets take addresses rather than names, so the resolver that keeps
+  // everything else in a denied context off the network never sees them.
+  if (IsNetworkAccessDenied()) {
+    return;
+  }
   socket_factory_receivers_.Add(socket_factory_.get(), std::move(receiver));
 }
 
@@ -2024,6 +2033,9 @@ void NetworkContext::OnNewSCTAuditingReportSent() {
 void NetworkContext::CreateUDPSocket(
     mojo::PendingReceiver<mojom::UDPSocket> receiver,
     mojo::PendingRemote<mojom::UDPSocketListener> listener) {
+  if (IsNetworkAccessDenied()) {
+    return;
+  }
   socket_factory_->CreateUDPSocket(std::move(receiver), std::move(listener));
 }
 
@@ -2037,6 +2049,10 @@ void NetworkContext::CreateRestrictedUDPSocket(
     bool allow_multicast,
     bool allow_source_specific_multicast,
     CreateRestrictedUDPSocketCallback callback) {
+  if (IsNetworkAccessDenied()) {
+    std::move(callback).Run(net::ERR_NETWORK_ACCESS_DENIED, std::nullopt);
+    return;
+  }
   // SimpleHostResolver is transitively owned by |this|.
   socket_factory_->CreateRestrictedUDPSocket(
       addr, mode, traffic_annotation, std::move(params), std::move(receiver),
@@ -2050,6 +2066,10 @@ void NetworkContext::CreateTCPServerSocket(
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
     mojo::PendingReceiver<mojom::TCPServerSocket> receiver,
     CreateTCPServerSocketCallback callback) {
+  if (IsNetworkAccessDenied()) {
+    std::move(callback).Run(net::ERR_NETWORK_ACCESS_DENIED, std::nullopt);
+    return;
+  }
   socket_factory_->CreateTCPServerSocket(
       local_addr, std::move(options),
       static_cast<net::NetworkTrafficAnnotationTag>(traffic_annotation),
@@ -2064,6 +2084,12 @@ void NetworkContext::CreateTCPConnectedSocket(
     mojo::PendingReceiver<mojom::TCPConnectedSocket> receiver,
     mojo::PendingRemote<mojom::SocketObserver> observer,
     CreateTCPConnectedSocketCallback callback) {
+  if (IsNetworkAccessDenied()) {
+    std::move(callback).Run(net::ERR_NETWORK_ACCESS_DENIED, std::nullopt,
+                            std::nullopt, mojo::ScopedDataPipeConsumerHandle(),
+                            mojo::ScopedDataPipeProducerHandle());
+    return;
+  }
   socket_factory_->CreateTCPConnectedSocket(
       local_addr, remote_addr_list, std::move(tcp_connected_socket_options),
       traffic_annotation, std::move(receiver), std::move(observer),
@@ -2075,6 +2101,10 @@ void NetworkContext::CreateTCPBoundSocket(
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
     mojo::PendingReceiver<mojom::TCPBoundSocket> receiver,
     CreateTCPBoundSocketCallback callback) {
+  if (IsNetworkAccessDenied()) {
+    std::move(callback).Run(net::ERR_NETWORK_ACCESS_DENIED, std::nullopt);
+    return;
+  }
   socket_factory_->CreateTCPBoundSocket(
       local_addr,
       static_cast<net::NetworkTrafficAnnotationTag>(traffic_annotation),
@@ -2259,7 +2289,9 @@ void NetworkContext::CreateHostResolver(
   net::HostResolver* internal_resolver = url_request_context_->host_resolver();
   std::unique_ptr<net::HostResolver> private_internal_resolver;
 
-  if (config_overrides &&
+  // A resolver of its own would be one without the rule that refuses every
+  // name, so a denied context answers with the one it has.
+  if (!IsNetworkAccessDenied() && config_overrides &&
       config_overrides.value() != net::DnsConfigOverrides()) {
     // If custom configuration is needed, create a separate internal resolver
     // with the specified configuration overrides. Because we are using a non-
@@ -2664,6 +2696,11 @@ void NetworkContext::CreateP2PSocketManager(
     mojo::PendingReceiver<mojom::P2PTrustedSocketManager>
         trusted_socket_manager,
     mojo::PendingReceiver<mojom::P2PSocketManager> socket_manager_receiver) {
+  // WebRTC's UDP sockets are made directly, on addresses, and so would not
+  // pass the resolver at all.
+  if (IsNetworkAccessDenied()) {
+    return;
+  }
   std::unique_ptr<P2PSocketManager> socket_manager =
       std::make_unique<P2PSocketManager>(
           network_anonymization_key, std::move(client),
@@ -2677,6 +2714,11 @@ void NetworkContext::CreateP2PSocketManager(
 
 void NetworkContext::CreateMdnsResponder(
     mojo::PendingReceiver<mojom::MdnsResponder> responder_receiver) {
+  // An mDNS responder announces names on the local network, which is the
+  // network all the same.
+  if (IsNetworkAccessDenied()) {
+    return;
+  }
 #if BUILDFLAG(ENABLE_MDNS)
   if (!mdns_responder_manager_) {
     mdns_responder_manager_ = std::make_unique<MdnsResponderManager>();
@@ -3272,6 +3314,14 @@ URLRequestContextOwner NetworkContext::MakeURLRequestContext(
            "hostname.";
     builder.set_host_mapping_rules(
         command_line->GetSwitchValueASCII(switches::kHostRules));
+  }
+
+  // Every connection the stack makes starts with a resolution -- of a name,
+  // of an IP literal, of a proxy -- so refusing them all is what keeps a
+  // denied context off the network, whatever path the request took to get
+  // here. After the command line's rules, which it replaces.
+  if (params_->deny_network_access) {
+    builder.set_host_mapping_rules("MAP * ^NOTFOUND");
   }
 
 #if BUILDFLAG(IS_WIN)

@@ -896,6 +896,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
 
   GURL GetHSTSRedirectForPreconnect(const GURL& original_url);
 
+  // Whether this context was made with `deny_network_access`.
+  bool IsNetworkAccessDenied() const;
+
 #if BUILDFLAG(IS_P2P_ENABLED)
   void DestroySocketManager(P2PSocketManager* socket_manager);
 #endif  // BUILDFLAG(IS_P2P_ENABLED)

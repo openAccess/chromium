@@ -2167,6 +2167,15 @@ class CONTENT_EXPORT ContentBrowserClient {
       cert_verifier::mojom::CertVerifierCreationParams*
           cert_verifier_creation_params);
 
+  // Whether the NetworkContext of the storage partition `config` is to be kept
+  // off the network entirely (NetworkContextParams::deny_network_access): for
+  // a partition whose content the embedder serves from somewhere else, and
+  // where a request that reaches the network would be a leak. Applied after
+  // ConfigureNetworkContextParams(), so nothing that configures the context
+  // can undo it.
+  virtual bool ShouldDenyNetworkAccess(BrowserContext* browser_context,
+                                       const StoragePartitionConfig& config);
+
   // Returns the parent paths that contain all the network service's
   // BrowserContexts' storage. Multiple paths can be returned, e.g. in case the
   // persistent storage location differs from the cache storage location.
