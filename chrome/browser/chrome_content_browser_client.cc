@@ -8512,6 +8512,15 @@ void ChromeContentBrowserClient::OnKeepaliveTimerFired(
 
 bool ChromeContentBrowserClient::ShouldPreconnectNavigation(
     content::RenderFrameHost* render_frame_host) {
+  // A replay tab's navigation is answered out of the archive, so a socket
+  // opened ahead of it would be no use to it -- and would reach the live host,
+  // since a preconnect goes to the partition's network context directly
+  // rather than through the factory that serves the archive.
+  if (wacz_replay::ServesFromArchive(
+          render_frame_host,
+          render_frame_host->GetProcess()->GetDeprecatedID())) {
+    return false;
+  }
   content::BrowserContext* browser_context =
       render_frame_host->GetBrowserContext();
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)

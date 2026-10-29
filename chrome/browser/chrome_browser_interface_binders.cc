@@ -35,6 +35,7 @@
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/translate/translate_frame_binder.h"
 #include "chrome/browser/ui/search_engines/search_engine_tab_helper.h"
+#include "chrome/browser/wacz_replay.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/services/speech/buildflags/buildflags.h"
@@ -299,6 +300,14 @@ void ForwardToJavaFrame(content::RenderFrameHost* render_frame_host,
 void BindNetworkHintsHandler(
     content::RenderFrameHost* frame_host,
     mojo::PendingReceiver<network_hints::mojom::NetworkHintsHandler> receiver) {
+  // An archived page's <link rel=preconnect> and dns-prefetch would open live
+  // connections to the hosts it names, from the replay partition's own network
+  // context, which no archive stands in front of. Left unbound, the hints go
+  // nowhere, as they would have done for a page that never asked.
+  if (wacz_replay::ServesFromArchive(
+          frame_host, frame_host->GetProcess()->GetDeprecatedID())) {
+    return;
+  }
   predictors::NetworkHintsHandlerImpl::Create(frame_host, std::move(receiver));
 }
 
