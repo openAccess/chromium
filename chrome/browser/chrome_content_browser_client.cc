@@ -6628,7 +6628,8 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
   // untouched here and reaches the network as it always did.
   if (wacz_replay::ServesFromArchive(frame, render_process_id)) {
     auto [receiver, passthrough] = factory_builder.Append();
-    wacz_replay::BindFactory(std::move(receiver), std::move(passthrough));
+    wacz_replay::BindFactory(frame, render_process_id, std::move(receiver),
+                             std::move(passthrough));
     return;
   }
 

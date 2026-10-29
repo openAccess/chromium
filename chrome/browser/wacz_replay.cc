@@ -15,6 +15,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/profiles/profile.h"
@@ -42,6 +43,10 @@ namespace {
 // what IsReplayPartition() recognises, so one test answers for all of them.
 constexpr char kPartitionDomain[] = "wacz-replay";
 
+// Between the archive's key and the moment in a partition's name. Neither
+// half can contain it: one is hex and the other digits.
+constexpr char kMomentSeparator = '-';
+
 // Enough of a digest to name an archive by. Collisions would merge two
 // captures' storage; sixty-four bits puts that out of reach without making the
 // name unreadable in a trace.
@@ -55,9 +60,9 @@ base::FilePath ArchivePath() {
       switches::kWaczReplay);
 }
 
-// The archive this browser is replaying, opened once. Shared by every factory
-// so that the container is read, and its index parsed, once rather than once
-// per frame.
+// The archive this browser is replaying, opened once. Shared by every factory,
+// whatever moment it serves, so that the container is read, and its index
+// parsed, once rather than once per frame or per tab.
 scoped_refptr<warc::WaczArchive>& Archive() {
   static base::NoDestructor<scoped_refptr<warc::WaczArchive>> archive;
   return *archive;
@@ -70,7 +75,21 @@ std::vector<warc::PageEntry> ReadPageList(base::FilePath path) {
       base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ));
 }
 
-void OpenReplayTab(BrowserWindowInterface* browser, const GURL& url) {
+// The partition `frame` is in, or for a worker the one its process serves.
+const content::StoragePartition* PartitionOf(content::RenderFrameHost* frame,
+                                             int render_process_id) {
+  if (frame) {
+    return frame->GetStoragePartition();
+  }
+  if (auto* process = content::RenderProcessHost::FromID(render_process_id)) {
+    return process->GetStoragePartition();
+  }
+  return nullptr;
+}
+
+void OpenReplayTab(BrowserWindowInterface* browser,
+                   const GURL& url,
+                   const std::string& moment) {
   Profile* profile = browser->GetProfile();
 
   // Fixed, rather than chosen again at each navigation: the tab keeps the
@@ -82,7 +101,7 @@ void OpenReplayTab(BrowserWindowInterface* browser, const GURL& url) {
   std::unique_ptr<content::WebContents> contents =
       content::WebContents::Create(content::WebContents::CreateParams(
           profile, content::SiteInstance::CreateForFixedStoragePartition(
-                       profile, url, ReplayPartition(profile))));
+                       profile, url, ReplayPartition(profile, moment))));
   contents->GetController().LoadURL(url, content::Referrer(),
                                     ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
                                     std::string());
@@ -122,20 +141,11 @@ void OpenTabsForPages(base::WeakPtr<BrowserWindowInterface> browser,
     urls.push_back(GURL(pages.front().url));
   }
 
-  // Opened here rather than left to the first request, because this is where
-  // its moment is settled. An archive that opens itself later has no time to
-  // serve but the earliest it holds, which is the same answer only for a
-  // capture made in one sitting.
-  //
-  // One moment for the archive, so the first page named settles it. That is
-  // exact for the single tab a replay usually is, and it is why a moment will
-  // have to belong to a tab before two pages captured weeks apart can be
-  // replayed beside each other.
-  Archive() =
-      warc::WaczArchive::Open(ArchivePath(), MomentOf(pages, urls.front()));
-
+  // Each tab at its own page's moment. A tab left to the first request would
+  // have no time to serve but the earliest the archive holds, which is the
+  // same answer only for a capture made in one sitting.
   for (const GURL& url : urls) {
-    OpenReplayTab(browser.get(), url);
+    OpenReplayTab(browser.get(), url, MomentOf(pages, url));
   }
 }
 
@@ -147,9 +157,14 @@ bool IsEnabled() {
 }
 
 content::StoragePartitionConfig ReplayPartition(
-    content::BrowserContext* browser_context) {
+    content::BrowserContext* browser_context,
+    const std::string& moment) {
+  // Spelled one way, so that a moment from the page list and the same moment
+  // from an index are one partition rather than two.
   return content::StoragePartitionConfig::Create(
-      browser_context, kPartitionDomain, ArchiveKey(ArchivePath()),
+      browser_context, kPartitionDomain,
+      base::StrCat({ArchiveKey(ArchivePath()), std::string(1, kMomentSeparator),
+                    warc::ToIndexTimestamp(moment)}),
       /*in_memory=*/true);
 }
 
@@ -157,14 +172,19 @@ bool IsReplayPartition(const content::StoragePartitionConfig& config) {
   return config.partition_domain() == kPartitionDomain;
 }
 
-bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id) {
-  const content::StoragePartition* partition = nullptr;
-  if (frame) {
-    partition = frame->GetStoragePartition();
-  } else if (auto* process =
-                 content::RenderProcessHost::FromID(render_process_id)) {
-    partition = process->GetStoragePartition();
+std::string ReplayMoment(const content::StoragePartitionConfig& config) {
+  if (!IsReplayPartition(config)) {
+    return std::string();
   }
+  const std::string& name = config.partition_name();
+  const size_t separator = name.find(kMomentSeparator);
+  return separator == std::string::npos ? std::string()
+                                        : name.substr(separator + 1);
+}
+
+bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id) {
+  const content::StoragePartition* partition =
+      PartitionOf(frame, render_process_id);
   return partition && IsReplayPartition(partition->GetConfig());
 }
 
@@ -177,6 +197,8 @@ void OpenReplayTabs(BrowserWindowInterface* browser, std::vector<GURL> urls) {
 }
 
 void BindFactory(
+    content::RenderFrameHost* frame,
+    int render_process_id,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough) {
   if (!Archive()) {
@@ -185,9 +207,15 @@ void BindFactory(
     // this one. An archive that turns out to be unreadable still has a
     // factory, which answers every request with a miss -- better a browser
     // that plainly has nothing than one that quietly goes to the network.
-    Archive() = warc::WaczArchive::Open(ArchivePath(), std::string());
+    Archive() = warc::WaczArchive::Open(ArchivePath());
   }
-  Archive()->BindFactory(std::move(receiver), std::move(passthrough));
+  // The moment is the partition's, so a frame and the workers beside it in
+  // one process cannot be served two different ones.
+  const content::StoragePartition* partition =
+      PartitionOf(frame, render_process_id);
+  Archive()->BindFactory(
+      partition ? ReplayMoment(partition->GetConfig()) : std::string(),
+      std::move(receiver), std::move(passthrough));
 }
 
 }  // namespace wacz_replay

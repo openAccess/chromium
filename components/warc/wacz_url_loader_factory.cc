@@ -214,43 +214,45 @@ std::optional<ArchivedResponse> WaczArchiveSource::Lookup(
 }
 
 // static
-scoped_refptr<WaczArchive> WaczArchive::Open(base::FilePath path,
-                                             const std::string& timestamp) {
-  return base::WrapRefCounted(new WaczArchive(std::move(path), timestamp));
+scoped_refptr<WaczArchive> WaczArchive::Open(base::FilePath path) {
+  return base::WrapRefCounted(new WaczArchive(std::move(path)));
 }
 
-WaczArchive::WaczArchive(base::FilePath path, const std::string& timestamp)
+WaczArchive::WaczArchive(base::FilePath path)
     : source_(base::ThreadPool::CreateSequencedTaskRunner(
                   {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
                    base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
-              std::move(path)),
-      timestamp_(timestamp) {}
+              std::move(path)) {}
 
 WaczArchive::~WaczArchive() = default;
 
 mojo::PendingRemote<network::mojom::URLLoaderFactory>
-WaczArchive::CreateFactory() {
+WaczArchive::CreateFactory(const std::string& timestamp) {
   mojo::PendingRemote<network::mojom::URLLoaderFactory> pending_remote;
-  BindFactory(pending_remote.InitWithNewPipeAndPassReceiver(),
+  BindFactory(timestamp, pending_remote.InitWithNewPipeAndPassReceiver(),
               mojo::NullRemote());
   return pending_remote;
 }
 
 void WaczArchive::BindFactory(
+    const std::string& timestamp,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough) {
   // Deletes itself once nothing holds a receiver, as its base class arranges.
   base::MakeSelfDeleting<WaczUrlLoaderFactory>(
-      base::WrapRefCounted(this), std::move(passthrough), std::move(receiver));
+      base::WrapRefCounted(this), timestamp, std::move(passthrough),
+      std::move(receiver));
 }
 
 WaczUrlLoaderFactory::WaczUrlLoaderFactory(
     scoped_refptr<WaczArchive> archive,
+    const std::string& timestamp,
     mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     base::SelfDeletingPassKey key)
     : network::SelfDeletingURLLoaderFactory(std::move(receiver), key),
       archive_(std::move(archive)),
+      timestamp_(timestamp),
       passthrough_(std::move(passthrough)) {}
 
 WaczUrlLoaderFactory::~WaczUrlLoaderFactory() = default;
@@ -297,7 +299,7 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
 
   archive_->source()
       .AsyncCall(&WaczArchiveSource::Lookup)
-      .WithArgs(request.url, archive_->timestamp())
+      .WithArgs(request.url, timestamp_)
       .Then(base::BindOnce(&WaczUrlLoader::Serve, url_loader->AsWeakPtr()));
 }
 

@@ -59,24 +59,27 @@ class WaczArchiveSource {
   std::optional<WaczCollection> collection_;
 };
 
-// One opened archive, and the moment it is being replayed at.
+// One opened archive.
 //
 // Shared by every factory serving from it: a frame, its iframes and its
-// workers are all reading one container, and opening it once means reading
-// its index once.
+// workers are all reading one container, and so are tabs replaying it at
+// different moments. Opening it once means reading its index once.
+//
+// The moment is not the archive's but each factory's, since two tabs can be
+// replaying one archive as it stood weeks apart.
 class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
  public:
-  // Serves `archive` as it stood at `timestamp`, which may be written either
-  // way a WACZ writes one.
-  static scoped_refptr<WaczArchive> Open(base::FilePath path,
-                                         const std::string& timestamp);
+  static scoped_refptr<WaczArchive> Open(base::FilePath path);
 
   WaczArchive(const WaczArchive&) = delete;
   WaczArchive& operator=(const WaczArchive&) = delete;
 
-  // A factory serving from this archive. Hand one to a frame and everything
-  // that frame asks for comes from here.
-  mojo::PendingRemote<network::mojom::URLLoaderFactory> CreateFactory();
+  // A factory serving this archive as it stood at `timestamp`, which may be
+  // written either way a WACZ writes one, or be empty for the earliest
+  // capture of each URL. Hand one to a frame and everything that frame asks
+  // for comes from here.
+  mojo::PendingRemote<network::mojom::URLLoaderFactory> CreateFactory(
+      const std::string& timestamp);
 
   // As above, for a caller that already has a receiver to fill -- which is
   // what a request interception hook hands over.
@@ -89,20 +92,19 @@ class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
   // would be broken by being refused. May be empty, in which case anything
   // not answered here fails.
   void BindFactory(
+      const std::string& timestamp,
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
       mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough);
 
   base::SequenceBound<WaczArchiveSource>& source() { return source_; }
-  const std::string& timestamp() const { return timestamp_; }
 
  private:
   friend class base::RefCountedThreadSafe<WaczArchive>;
 
-  WaczArchive(base::FilePath path, const std::string& timestamp);
+  explicit WaczArchive(base::FilePath path);
   ~WaczArchive();
 
   base::SequenceBound<WaczArchiveSource> source_;
-  const std::string timestamp_;
 };
 
 class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
@@ -112,6 +114,7 @@ class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
   // being done by hand.
   WaczUrlLoaderFactory(
       scoped_refptr<WaczArchive> archive,
+      const std::string& timestamp,
       mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
       base::SelfDeletingPassKey key);
@@ -136,6 +139,9 @@ class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
   // Held, not owned: several factories may serve one archive, and the archive
   // outlives any of them.
   const scoped_refptr<WaczArchive> archive_;
+
+  // The moment every request through this factory is answered at.
+  const std::string timestamp_;
 
   // Where a request the archive has no business answering goes instead.
   mojo::Remote<network::mojom::URLLoaderFactory> passthrough_;

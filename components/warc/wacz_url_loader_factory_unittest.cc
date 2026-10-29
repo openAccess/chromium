@@ -57,7 +57,8 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
 
   void AddResponse(std::string_view url,
                    std::string_view head,
-                   std::string_view body) {
+                   std::string_view body,
+                   std::string_view timestamp = kTimestamp) {
     RecordHeader header;
     header.type = RecordType::kResponse;
     header.target_uri = std::string(url);
@@ -68,14 +69,17 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
         SerializeRecord(header, block, head.size(), DigestAlgorithm::kSha1));
 
     index_ += base::StrCat(
-        {ToSurt(GURL(std::string(url))), " ", kTimestamp, " {\"url\": \"", url,
+        {ToSurt(GURL(std::string(url))), " ", timestamp, " {\"url\": \"", url,
          "\", \"length\": \"", base::NumberToString(member.size()),
          "\", \"offset\": \"", base::NumberToString(archive_.size()),
          "\", \"filename\": \"t.warc.gz\"}\n"});
     archive_.insert(archive_.end(), member.begin(), member.end());
   }
 
-  mojo::Remote<network::mojom::URLLoaderFactory> BuildFactory() {
+  // Serves what was added, at `timestamp`. The archive stays open in
+  // `open_archive_`, so a test can make it a second factory.
+  mojo::Remote<network::mojom::URLLoaderFactory> BuildFactory(
+      const std::string& timestamp = kTimestamp) {
     const base::FilePath content = temp_dir_.GetPath().AppendASCII("content");
     const base::FilePath archive_dir = content.AppendASCII("archive");
     const base::FilePath indexes = content.AppendASCII("indexes");
@@ -89,9 +93,9 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
     const base::FilePath path = temp_dir_.GetPath().AppendASCII("c.wacz");
     EXPECT_TRUE(zip::Zip(content, path, /*include_hidden_files=*/false));
 
-    open_archive_ = WaczArchive::Open(path, kTimestamp);
+    open_archive_ = WaczArchive::Open(path);
     return mojo::Remote<network::mojom::URLLoaderFactory>(
-        open_archive_->CreateFactory());
+        open_archive_->CreateFactory(timestamp));
   }
 
   // Issues `url` through `factory`. The loader is kept alive for as long as
@@ -343,12 +347,44 @@ TEST_F(WaczUrlLoaderFactoryTest, HeadersThatWouldOutliveTheVisitAreDropped) {
   EXPECT_EQ("text/html", client.response_head()->mime_type);
 }
 
+// The moment belongs to the factory, not to the archive: two tabs replaying
+// one archive weeks apart each see their own capture of the same URL, out of
+// the one container opened once.
+TEST_F(WaczUrlLoaderFactoryTest, EachFactoryServesItsOwnMoment) {
+  constexpr char kHead[] = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+  AddResponse("https://example.org/news", kHead, "<html>march</html>",
+              "20260301120000");
+  AddResponse("https://example.org/news", kHead, "<html>april</html>",
+              "20260401120000");
+
+  mojo::Remote<network::mojom::URLLoaderFactory> march =
+      BuildFactory("20260301120000");
+  // Written as a page list writes it, as a tab opened from one will be.
+  mojo::Remote<network::mojom::URLLoaderFactory> april(
+      open_archive_->CreateFactory("2026-04-01T12:00:00Z"));
+
+  network::TestURLLoaderClient march_client;
+  EXPECT_EQ("<html>march</html>",
+            FetchBody(march, "https://example.org/news", &march_client));
+  loader_.reset();
+
+  network::TestURLLoaderClient april_client;
+  EXPECT_EQ("<html>april</html>",
+            FetchBody(april, "https://example.org/news", &april_client));
+  loader_.reset();
+
+  // And asking the second did not move the first.
+  network::TestURLLoaderClient again_client;
+  EXPECT_EQ("<html>march</html>",
+            FetchBody(march, "https://example.org/news", &again_client));
+}
+
 TEST_F(WaczUrlLoaderFactoryTest, AnUnreadableArchiveServesNothing) {
   const base::FilePath path = temp_dir_.GetPath().AppendASCII("not.wacz");
   ASSERT_TRUE(base::WriteFile(path, "this is not a container"));
-  scoped_refptr<WaczArchive> archive = WaczArchive::Open(path, kTimestamp);
+  scoped_refptr<WaczArchive> archive = WaczArchive::Open(path);
   mojo::Remote<network::mojom::URLLoaderFactory> factory(
-      archive->CreateFactory());
+      archive->CreateFactory(kTimestamp));
 
   // Whether a container can be read is only known once it has been, which is
   // not something the caller can wait for -- so it shows up as every request

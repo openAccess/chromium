@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_WACZ_REPLAY_H_
 #define CHROME_BROWSER_WACZ_REPLAY_H_
 
+#include <string>
 #include <vector>
 
 #include "content/public/browser/storage_partition_config.h"
@@ -31,7 +32,7 @@ namespace wacz_replay {
 // of a tab without the decision having to move.
 bool IsEnabled();
 
-// The storage partition archived content is replayed in.
+// The storage partition archived content is replayed in, at `moment`.
 //
 // Serving an archived origin *as* that origin is the whole point of replaying
 // in a browser, and it is also what makes a partition of its own necessary:
@@ -47,12 +48,29 @@ bool IsEnabled();
 // site's would be. The name is a digest of the path as it was given, so the
 // same archive opened twice is one partition; the same archive under two
 // spellings is two, which costs nothing when neither survives the browser.
+//
+// Named for the moment too, which is what makes the moment a tab's rather
+// than the archive's. A replay serves one moment to everything in its
+// partition -- a frame, its iframes, and the workers that belong to a process
+// rather than a frame -- and a process serves one partition, so the partition
+// is the one thing every request already knows that can carry it. Two tabs at
+// two moments are two visits to the web, weeks apart perhaps, and keep apart
+// what each stored as those visits did; two tabs at one moment share it.
+//
+// `moment` may be written either way a WACZ writes one, and is the same
+// partition either way. Empty means the earliest capture of each URL.
 content::StoragePartitionConfig ReplayPartition(
-    content::BrowserContext* browser_context);
+    content::BrowserContext* browser_context,
+    const std::string& moment);
 
 // Whether `config` is a partition returned by ReplayPartition() -- for any
 // archive, since what follows from it is the same for all of them.
 bool IsReplayPartition(const content::StoragePartitionConfig& config);
+
+// The moment a replay partition serves, as an index writes it: the inverse of
+// ReplayPartition(). Empty for the earliest capture, or for a partition that
+// is not a replay partition at all.
+std::string ReplayMoment(const content::StoragePartitionConfig& config);
 
 // Whether what this frame asks for is answered out of an archive. `frame` is
 // null for a worker, which belongs to a process instead; either way the
@@ -78,6 +96,13 @@ bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id);
 // is looked up in it too: replaying a page at some other capture's time is
 // exactly the sort of miss nobody notices.
 //
+// Each tab is replayed at the moment its own page was visited, so pages
+// captured weeks apart can be replayed side by side, each as it was. Whatever
+// a tab goes on to load, it loads at that moment: following a link to a page
+// captured at another time serves that page as it stood nearest the tab's
+// moment, rather than letting the tab assemble itself from captures weeks
+// apart.
+//
 // The partition is fixed to each tab rather than worked out per navigation,
 // because a capture is somewhere you are and not a page you are on: follow a
 // link out of an archived page and you are still inside the archive. It is
@@ -89,14 +114,19 @@ bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id);
 // appear a moment after the window does, and `browser` may be gone by then.
 void OpenReplayTabs(BrowserWindowInterface* browser, std::vector<GURL> urls);
 
-// Fills `receiver` with a factory serving the archive. Every http and https
-// request every frame makes goes through it, so the archived site keeps its
-// own URLs and its own origin, and nothing reaches the network.
+// Fills `receiver` with a factory serving the archive to `frame` -- or to the
+// worker `render_process_id` hosts, if `frame` is null -- at the moment of the
+// replay partition it is in. Every http and https request it makes goes
+// through the factory, so the archived site keeps its own URLs and its own
+// origin, and nothing reaches the network. Call only where
+// ServesFromArchive() said so.
 //
 // `passthrough` takes what the archive has no business answering -- the
 // browser's own chrome:// pages and furniture, which are no part of any
 // capture and would only be broken by being refused.
 void BindFactory(
+    content::RenderFrameHost* frame,
+    int render_process_id,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough);
 

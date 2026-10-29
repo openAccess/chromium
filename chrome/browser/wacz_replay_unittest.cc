@@ -15,6 +15,8 @@
 namespace wacz_replay {
 namespace {
 
+constexpr char kMoment[] = "20260301120000";
+
 class WaczReplayTest : public testing::Test {
  protected:
   // Starts this browser replaying `path`, as --wacz-replay would.
@@ -41,7 +43,8 @@ TEST_F(WaczReplayTest, NotReplayingUntilAnArchiveIsNamed) {
 TEST_F(WaczReplayTest, ReplayPartitionIsSeparateAndInMemory) {
   Replay("/tmp/capture.wacz");
 
-  const content::StoragePartitionConfig partition = ReplayPartition(&profile_);
+  const content::StoragePartitionConfig partition =
+      ReplayPartition(&profile_, kMoment);
   EXPECT_FALSE(partition.is_default());
   EXPECT_TRUE(partition.in_memory());
   EXPECT_NE(partition, content::StoragePartitionConfig::CreateDefault(
@@ -51,7 +54,7 @@ TEST_F(WaczReplayTest, ReplayPartitionIsSeparateAndInMemory) {
 TEST_F(WaczReplayTest, OnlyAReplayPartitionIsOne) {
   Replay("/tmp/capture.wacz");
 
-  EXPECT_TRUE(IsReplayPartition(ReplayPartition(&profile_)));
+  EXPECT_TRUE(IsReplayPartition(ReplayPartition(&profile_, kMoment)));
   EXPECT_FALSE(IsReplayPartition(
       content::StoragePartitionConfig::CreateDefault(&profile_)));
   // Somebody else's non-default partition is not one either -- a <webview>'s,
@@ -60,22 +63,65 @@ TEST_F(WaczReplayTest, OnlyAReplayPartitionIsOne) {
       &profile_, "someextensionid", "", /*in_memory=*/true)));
 }
 
-// One archive is one partition, however many tabs or frames are replaying it:
-// they were one capture of the web and share what it stored, as the pages
-// being replayed did when they were live.
-TEST_F(WaczReplayTest, OneArchiveIsOnePartition) {
+// One archive at one moment is one partition, however many tabs or frames are
+// replaying it: they were one capture of the web and share what it stored, as
+// the pages being replayed did when they were live.
+TEST_F(WaczReplayTest, OneMomentIsOnePartition) {
   Replay("/tmp/capture.wacz");
-  EXPECT_EQ(ReplayPartition(&profile_), ReplayPartition(&profile_));
+  EXPECT_EQ(ReplayPartition(&profile_, kMoment),
+            ReplayPartition(&profile_, kMoment));
+}
+
+// The moment is what makes it a tab's: two tabs on one archive at two
+// moments are two visits to the web, and keep apart what each stored.
+TEST_F(WaczReplayTest, TwoMomentsAreTwoPartitions) {
+  Replay("/tmp/capture.wacz");
+  const content::StoragePartitionConfig march =
+      ReplayPartition(&profile_, "20260301120000");
+  const content::StoragePartitionConfig april =
+      ReplayPartition(&profile_, "20260401120000");
+
+  EXPECT_NE(march, april);
+  EXPECT_TRUE(IsReplayPartition(march));
+  EXPECT_TRUE(IsReplayPartition(april));
+}
+
+// A page list and an index spell a time differently. The same moment however
+// it is written is the same partition, or a tab opened from the page list and
+// one opened from the index would not share what they stored.
+TEST_F(WaczReplayTest, OneMomentHoweverItIsWritten) {
+  Replay("/tmp/capture.wacz");
+  EXPECT_EQ(ReplayPartition(&profile_, "2026-03-01T12:00:00Z"),
+            ReplayPartition(&profile_, "20260301120000"));
+}
+
+// The partition is where a factory learns which moment to serve, so what goes
+// in has to come back out -- for a frame, and for a worker that has only its
+// process to go by.
+TEST_F(WaczReplayTest, APartitionKnowsItsMoment) {
+  Replay("/tmp/capture.wacz");
+  EXPECT_EQ("20260301120000",
+            ReplayMoment(ReplayPartition(&profile_, "2026-03-01T12:00:00Z")));
+  // No moment is the earliest capture, and stays that.
+  EXPECT_EQ("", ReplayMoment(ReplayPartition(&profile_, "")));
+  // Nothing that is not a replay partition has a moment to give.
+  EXPECT_EQ("", ReplayMoment(
+                    content::StoragePartitionConfig::CreateDefault(&profile_)));
+  EXPECT_EQ("", ReplayMoment(content::StoragePartitionConfig::Create(
+                    &profile_, "someextensionid", "ab-20260301120000",
+                    /*in_memory=*/true)));
 }
 
 // Two archives are two captures, and what one stored is no more the other's
 // than a live site's would be.
 TEST_F(WaczReplayTest, TwoArchivesAreTwoPartitions) {
   Replay("/tmp/capture.wacz");
-  const content::StoragePartitionConfig first = ReplayPartition(&profile_);
+  const content::StoragePartitionConfig first =
+      ReplayPartition(&profile_, kMoment);
 
   Replay("/tmp/another.wacz");
-  const content::StoragePartitionConfig second = ReplayPartition(&profile_);
+  const content::StoragePartitionConfig second =
+      ReplayPartition(&profile_, kMoment);
 
   EXPECT_NE(first, second);
   EXPECT_TRUE(IsReplayPartition(second));
