@@ -22,6 +22,7 @@
 #include "base/uuid.h"
 #include "base/values.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/navigation_handle_timing.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "services/network/public/cpp/network_switches.h"
@@ -115,6 +116,29 @@ std::string FormatPageTime(base::Time time) {
                             exploded.hour, exploded.minute, exploded.second);
 }
 
+// When the page's document was requested, if it came without a redirect, as
+// near as the browser can say to the date the network service gives its
+// records.
+//
+// That date is what the page has to carry. A WACZ ties a page to its record by
+// URL and time to the second, so a page dated a moment later than its record
+// -- at commit, say, after a slow response -- can land in the next second and
+// match nothing; the tooling then drops it from the page list. The network
+// service dates a navigation's records when its loader is created, and starts
+// the request in the same breath, so the request's start is the record's date
+// to within tens of microseconds. Only a second boundary falling in that gap
+// parts them.
+base::Time RequestTime(content::NavigationHandle* handle) {
+  const content::NavigationHandleTiming& timing =
+      handle->GetNavigationHandleTiming();
+  const base::TimeTicks start =
+      timing.first_fetch_start_time.value_or(timing.loader_start_time);
+  if (start.is_null()) {
+    return base::Time::Now();
+  }
+  return base::Time::Now() - (base::TimeTicks::Now() - start);
+}
+
 }  // namespace
 
 WarcPageRecorder::WarcPageRecorder(content::WebContents* web_contents)
@@ -133,8 +157,26 @@ void WarcPageRecorder::MaybeCreateForWebContents(
   CreateForWebContents(web_contents);
 }
 
+void WarcPageRecorder::DidRedirectNavigation(
+    content::NavigationHandle* handle) {
+  // Each hop of a redirect chain is an exchange of its own, dated when the
+  // network service follows the redirect -- which it is told to do right
+  // after this. The hop the page lands on is the last of these.
+  if (handle->IsInPrimaryMainFrame()) {
+    last_redirect_ = {handle->GetNavigationId(), base::Time::Now()};
+  }
+}
+
 void WarcPageRecorder::DidFinishNavigation(content::NavigationHandle* handle) {
-  if (!handle->IsInPrimaryMainFrame() || !handle->HasCommitted()) {
+  if (!handle->IsInPrimaryMainFrame()) {
+    return;
+  }
+  std::optional<base::Time> redirected_at;
+  if (last_redirect_ && last_redirect_->first == handle->GetNavigationId()) {
+    redirected_at = last_redirect_->second;
+    last_redirect_.reset();
+  }
+  if (!handle->HasCommitted()) {
     return;
   }
 
@@ -154,8 +196,9 @@ void WarcPageRecorder::DidFinishNavigation(content::NavigationHandle* handle) {
     return;
   }
 
-  pending_ = PendingPage{handle->GetURL(), base::Time::Now(),
-                         base::Uuid::GenerateRandomV4().AsLowercaseString()};
+  pending_ =
+      PendingPage{handle->GetURL(), redirected_at.value_or(RequestTime(handle)),
+                  base::Uuid::GenerateRandomV4().AsLowercaseString()};
 }
 
 void WarcPageRecorder::SetCaptureDirectory(const base::FilePath& directory) {

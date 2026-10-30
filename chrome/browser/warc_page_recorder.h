@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "base/files/file_path.h"
 #include "base/time/time.h"
@@ -50,6 +51,7 @@ class WarcPageRecorder : public content::WebContentsObserver,
   explicit WarcPageRecorder(content::WebContents* web_contents);
 
   // content::WebContentsObserver:
+  void DidRedirectNavigation(content::NavigationHandle* handle) override;
   void DidFinishNavigation(content::NavigationHandle* handle) override;
   void DidStopLoading() override;
   void WebContentsDestroyed() override;
@@ -63,14 +65,18 @@ class WarcPageRecorder : public content::WebContentsObserver,
   void WritePendingPage();
 
   // A page that has committed but is not written yet. Its URL and time are
-  // fixed at commit, so a slow page is dated when it was requested rather than
-  // when it finished.
+  // fixed at commit, and the time is when the page was requested, so a slow
+  // page is dated as its records are rather than when it finished.
   struct PendingPage {
     GURL url;
     base::Time at;
     std::string id;
   };
   std::optional<PendingPage> pending_;
+
+  // When the main frame's navigation in flight last followed a redirect, by
+  // navigation id: the date of the request its page will be recorded under.
+  std::optional<std::pair<int64_t, base::Time>> last_redirect_;
 
   // The capture of this tab alone, if it has one. Empty means the session's.
   base::FilePath capture_directory_;
