@@ -17,20 +17,31 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/warc_page_recorder.h"
 #include "chrome/common/chrome_paths.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/reload_type.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/browser/storage_partition_config.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/mojom/network_service.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
 // Named as a --warc-output capture is (see network_service_instance_impl.cc),
 // so that a tab's capture and a session's look the same and sort together.
 constexpr char kWarcCapturePrefix[] = "chrdl";
+
+// The storage partitions archived tabs start empty in. Each tab gets one of its
+// own, so two captures share no state either.
+constexpr char kCapturePartitionDomain[] = "warc-capture";
 
 // Where captures go when --warc-output did not say: beside the user's
 // downloads, which is where a browser puts what it saves for the user.
@@ -135,11 +146,44 @@ void WarcTabCapture::Start(content::WebContents* web_contents) {
 }
 
 // static
+std::unique_ptr<content::WebContents> WarcTabCapture::StartInEmptyState(
+    content::WebContents* web_contents) {
+  const GURL url = web_contents->GetLastCommittedURL();
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return nullptr;
+  }
+  Profile* profile =
+      Profile::FromBrowserContext(web_contents->GetBrowserContext());
+
+  // Fixed, as a replay tab's is, so the tab keeps its partition wherever it
+  // goes; and fixed from its first frame, so nothing it loads is ever loaded
+  // with the profile's own state.
+  content::WebContents::CreateParams params(
+      profile, content::SiteInstance::CreateForFixedStoragePartition(
+                   profile, url,
+                   content::StoragePartitionConfig::Create(
+                       profile, kCapturePartitionDomain,
+                       base::UnguessableToken::Create().ToString(),
+                       /*in_memory=*/true)));
+  params.initially_hidden =
+      web_contents->GetVisibility() == content::Visibility::HIDDEN;
+  std::unique_ptr<content::WebContents> fresh =
+      content::WebContents::Create(params);
+
+  Start(fresh.get());
+  FromWebContents(fresh.get())->initial_url_ = url;
+  return fresh;
+}
+
+// static
 void WarcTabCapture::Stop(content::WebContents* web_contents) {
   WarcTabCapture* capture = FromWebContents(web_contents);
   if (!capture) {
     return;
   }
+  // Stopped before its capture began, a tab made to archive a page has still
+  // not shown it. It is not left empty for that.
+  capture->LoadInitialUrl();
   capture->Finish();
   web_contents->RemoveUserData(UserDataKey());
 }
@@ -170,7 +214,8 @@ void WarcTabCapture::OnCaptureOpened(base::WeakPtr<WarcTabCapture> self,
   }
   if (!opened) {
     // Nothing to record into. Leaving the tab marked would claim an archive
-    // that does not exist.
+    // that does not exist. (Stopping still shows the page a tab made for the
+    // capture was waiting on.)
     Stop(self->web_contents());
     return;
   }
@@ -195,6 +240,10 @@ void WarcTabCapture::OnCaptureOpened(base::WeakPtr<WarcTabCapture> self,
 }
 
 void WarcTabCapture::OnCaptureStarted() {
+  if (initial_url_) {
+    LoadInitialUrl();
+    return;
+  }
   // Load the page again now that its requests will be recorded, and from the
   // network: a response served from the cache never reaches the recorder.
   content::NavigationController& controller = web_contents()->GetController();
@@ -202,6 +251,17 @@ void WarcTabCapture::OnCaptureStarted() {
     controller.Reload(content::ReloadType::BYPASSING_CACHE,
                       /*check_for_repost=*/true);
   }
+}
+
+void WarcTabCapture::LoadInitialUrl() {
+  if (!initial_url_) {
+    return;
+  }
+  const GURL url = std::move(*initial_url_);
+  initial_url_.reset();
+  web_contents()->GetController().LoadURL(url, content::Referrer(),
+                                          ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
+                                          std::string());
 }
 
 void WarcTabCapture::Finish() {

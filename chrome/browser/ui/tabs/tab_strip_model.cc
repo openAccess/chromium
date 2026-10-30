@@ -2887,11 +2887,24 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
       const bool start = WillContextMenuStartWarcCapture(context_index);
       for (int index : GetIndicesForCommand(context_index)) {
         content::WebContents* contents = GetWebContentsAt(index);
-        if (start) {
-          WarcTabCapture::Start(contents);
-        } else {
+        if (!start) {
           WarcTabCapture::Stop(contents);
+          continue;
         }
+        if (WarcTabCapture::IsCapturing(contents)) {
+          continue;
+        }
+        // Archived from an empty state, a tab is replaced where it stands by
+        // one that has none; the tab's place, pin and group are kept, and
+        // so are the indices of the others. A tab showing nothing a capture
+        // could hold is archived as it is.
+        std::unique_ptr<content::WebContents> fresh =
+            WarcTabCapture::StartInEmptyState(contents);
+        if (!fresh) {
+          WarcTabCapture::Start(contents);
+          continue;
+        }
+        DiscardWebContents(contents, std::move(fresh));
       }
       break;
     }
