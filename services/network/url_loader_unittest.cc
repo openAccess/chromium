@@ -1068,6 +1068,28 @@ class URLLoaderTest : public testing::Test {
     return recorder;
   }
 
+  // Loads `request` with a loader and client of its own and no recorder, as an
+  // ordinary visit before archiving began. The fixture's client services a
+  // single load per test, which this leaves free for the recorded one.
+  void LoadUnrecorded(const ResourceRequest& request, std::string* body) {
+    TestURLLoaderClient client;
+    mojo::Remote<mojom::URLLoader> remote;
+    std::unique_ptr<URLLoader> loader;
+    base::RunLoop delete_run_loop;
+    URLLoaderOptions options;
+    loader = options.MakeURLLoader(
+        context(), DeleteLoaderCallback(&delete_run_loop, &loader),
+        remote.BindNewPipeAndPassReceiver(), request, client.CreateRemote());
+    client.RunUntilComplete();
+    delete_run_loop.Run();
+    ASSERT_EQ(net::OK, client.completion_status().error_code);
+    if (body) {
+      ASSERT_TRUE(client.response_body().is_valid());
+      ASSERT_TRUE(
+          mojo::BlockingCopyToString(client.response_body_release(), body));
+    }
+  }
+
   // Also wires up range completion, which production code hangs off the
   // NetworkContext.
   std::unique_ptr<WarcRecorder> StartWarcRecordingWithRangeCompletion(
@@ -1672,18 +1694,20 @@ TEST_F(URLLoaderTest, WarcCompletesEachRangedResourceOnlyOnce) {
 // On a revalidation the server sends a bare 304 and net serves the body from
 // cache. Recording the raw 304 beside those bytes produced a record that
 // contradicts itself -- a status forbidding a body, above one, with a payload
-// digest over content the headers deny exists. The client received the merged
-// entity, and that is what belongs in the archive.
-TEST_F(URLLoaderTest, WarcRecordsMergedEntityOnRevalidation) {
+// digest over content the headers deny exists. A recorded load now leaves the
+// cache alone, so it does not revalidate at all: it asks for the whole entity,
+// and no 304 reaches the archive.
+TEST_F(URLLoaderTest, WarcRecordedLoadDoesNotRevalidate) {
   const std::string body = "revalidated body";
+  bool revalidated = false;
 
   net::EmbeddedTestServer server;
   server.RegisterRequestHandler(base::BindLambdaForTesting(
-      [&body](const net::test_server::HttpRequest& request)
+      [&body, &revalidated](const net::test_server::HttpRequest& request)
           -> std::unique_ptr<net::test_server::HttpResponse> {
-        // Second time around the loader revalidates, and the server confirms
-        // the cached copy is still good.
+        // A loader that revalidates is told the cached copy is still good.
         if (request.headers.contains("If-None-Match")) {
+          revalidated = true;
           return std::make_unique<net::test_server::RawHttpResponse>(
               "HTTP/1.1 304 Not Modified\r\n"
               "ETag: \"v1\"\r\n"
@@ -1727,11 +1751,13 @@ TEST_F(URLLoaderTest, WarcRecordsMergedEntityOnRevalidation) {
       temp_dir.GetPath().AppendASCII("revalidate.warc");
   std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(archive_path);
 
-  // Second load revalidates and is served from cache.
+  // The cached copy would have to be revalidated; the recorded load asks for
+  // the entity outright instead.
   ResourceRequest request = CreateResourceRequest("GET", url);
   std::string second;
   ASSERT_EQ(net::OK, LoadRequest(request, &second));
   ASSERT_EQ(body, second);
+  EXPECT_FALSE(revalidated);
 
   recorder.reset();
   task_environment_.RunUntilIdle();
@@ -1746,6 +1772,100 @@ TEST_F(URLLoaderTest, WarcRecordsMergedEntityOnRevalidation) {
   EXPECT_EQ(archive.find("HTTP/1.1 304"), std::string::npos)
       << "archived a 304 status line above a body";
   EXPECT_NE(archive.find("HTTP/1.1 200"), std::string::npos);
+}
+
+// A file the cache holds and still counts fresh is served without a request,
+// so it never reaches the archive. That is how a page browsed before archiving
+// began came out of it without its stylesheets and scripts. A recorded load
+// goes to the server for it -- unaltered, since the request is archived too --
+// and leaves the cached copy where it was for the browsing that follows.
+TEST_F(URLLoaderTest, WarcRecordedLoadDoesNotUseTheCache) {
+  const std::string body = "body { color: red }";
+  int requests = 0;
+  bool asked_for_no_cache = false;
+
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        ++requests;
+        if (request.headers.contains("Pragma") ||
+            request.headers.contains("Cache-Control")) {
+          asked_for_no_cache = true;
+        }
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        response->set_content(body);
+        response->set_content_type("text/css");
+        response->AddCustomHeader("Cache-Control", "max-age=3600");
+        return response;
+      }));
+  ASSERT_TRUE(server.Start());
+  const GURL url = server.GetURL("/style.css");
+
+  LoadUnrecorded(CreateResourceRequest("GET", url), nullptr);
+  ASSERT_EQ(1, requests);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath archive_path = temp_dir.GetPath().AppendASCII("c.warc");
+  std::unique_ptr<WarcRecorder> recorder = StartWarcRecording(archive_path);
+
+  std::string recorded;
+  ASSERT_EQ(net::OK, LoadRequest(CreateResourceRequest("GET", url), &recorded));
+  EXPECT_EQ(body, recorded);
+  EXPECT_EQ(2, requests);
+  EXPECT_FALSE(asked_for_no_cache);
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
+  std::string archive;
+  ASSERT_TRUE(base::ReadFileToString(archive_path, &archive));
+  EXPECT_NE(archive.find(body), std::string::npos)
+      << "the cached file was not archived";
+
+  // Browsing that is not archived still has the cache.
+  std::string after;
+  LoadUnrecorded(CreateResourceRequest("GET", url), &after);
+  EXPECT_EQ(body, after);
+  EXPECT_EQ(2, requests);
+}
+
+// A load that may only be answered from the cache asks for nothing the network
+// could give, so recording it does not take the cache away from it.
+TEST_F(URLLoaderTest, WarcLeavesACacheOnlyLoadToTheCache) {
+  const std::string body = "cached and only cached";
+  int requests = 0;
+
+  net::EmbeddedTestServer server;
+  server.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const net::test_server::HttpRequest&)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        ++requests;
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        response->set_content(body);
+        response->set_content_type("text/plain");
+        response->AddCustomHeader("Cache-Control", "max-age=3600");
+        return response;
+      }));
+  ASSERT_TRUE(server.Start());
+  const GURL url = server.GetURL("/only.txt");
+
+  LoadUnrecorded(CreateResourceRequest("GET", url), nullptr);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  std::unique_ptr<WarcRecorder> recorder =
+      StartWarcRecording(temp_dir.GetPath().AppendASCII("o.warc"));
+
+  ResourceRequest request = CreateResourceRequest("GET", url);
+  request.load_flags = net::LOAD_ONLY_FROM_CACHE;
+  std::string cached;
+  ASSERT_EQ(net::OK, LoadRequest(request, &cached));
+  EXPECT_EQ(body, cached);
+  EXPECT_EQ(1, requests);
+
+  recorder.reset();
+  task_environment_.RunUntilIdle();
 }
 
 // net refuses to skip decoding for a response carrying `use-as-dictionary`,

@@ -548,6 +548,19 @@ URLLoader::URLLoader(
     warc_recorder_ = warc_recorder_factory_.Run(WarcBrowsingContext());
   }
 
+  // What the HTTP cache answers never crosses the wire, so it never reaches
+  // the archive: a page whose files were cached before archiving began comes
+  // out without its stylesheets and scripts. A recorded load leaves the cache
+  // alone -- neither reads nor fills it -- and gets everything from the server.
+  // Disabled rather than bypassed: bypassing adds no-cache headers, and the
+  // request as sent is what the archive keeps. A load that asks for the cache
+  // and nothing else is left to it.
+  if (warc_recorder_ &&
+      !(url_request_->load_flags() & net::LOAD_ONLY_FROM_CACHE)) {
+    url_request_->SetLoadFlags(url_request_->load_flags() |
+                               net::LOAD_DISABLE_CACHE);
+  }
+
   // A WARC response record is supposed to hold the payload exactly as it came
   // off the wire, still in its transfer encoding, so that it agrees with the
   // Content-Encoding recorded beside it. Asking net to skip decoding gives us
