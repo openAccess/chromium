@@ -591,6 +591,22 @@ PrerenderHostId PrerenderHostRegistry::CreateAndStartHost(
       return PrerenderHostId();
     }
 
+    // A prerendered page is made in the default StoragePartition (see
+    // PrerenderHost), whatever partition the tab it is for is fixed to.
+    // Activated into such a tab, it would carry the tab out of its partition
+    // and into the profile's own -- its cookies, storage and service workers --
+    // where every later navigation would stay. So a tab whose partition is
+    // fixed is not prerendered for, whether the embedder asks or the page's
+    // speculation rules do.
+    if (initiator_web_contents.GetPrimaryMainFrame()
+            ->GetSiteInstance()
+            ->IsFixedStoragePartition()) {
+      builder.RejectAsNotEligible(
+          attributes,
+          PrerenderFinalStatus::kPreloadingUnsupportedByWebContents);
+      return PrerenderHostId();
+    }
+
     // Check whether preloading is enabled. If it is not enabled, report the
     // reason.
     switch (initiator_web_contents.GetDelegate()->IsPrerender2Supported(

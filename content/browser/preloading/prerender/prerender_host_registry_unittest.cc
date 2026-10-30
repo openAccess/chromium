@@ -27,6 +27,7 @@
 #include "content/public/browser/preload_pipeline_info.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/test/preloading_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_browser_context.h"
@@ -220,7 +221,9 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
       PreloadingTriggerType trigger_type,
       const std::string& histogram_suffix,
       std::optional<blink::mojom::SpeculationEagerness> eagerness,
-      RenderFrameHostImpl* rfh) {
+      RenderFrameHostImpl* rfh,
+      TestWebContents* web_contents = nullptr) {
+    TestWebContents* initiator = web_contents ? web_contents : contents();
     switch (trigger_type) {
       case PreloadingTriggerType::kSpeculationRule:
       case PreloadingTriggerType::kSpeculationRuleFromIsolatedWorld:
@@ -233,7 +236,7 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
                     blink::mojom::SpeculationEagerness::kImmediate),
                 SpeculationRulesTags())),
             Referrer(),
-            /*no_vary_search_hint=*/std::nullopt, rfh, contents()->GetWeakPtr(),
+            /*no_vary_search_hint=*/std::nullopt, rfh, initiator->GetWeakPtr(),
             ui::PAGE_TRANSITION_LINK,
             /*should_warm_up_compositor=*/false,
             /*should_prepare_paint_tree=*/false,
@@ -249,7 +252,7 @@ class PrerenderHostRegistryTest : public RenderViewHostImplTestHarness {
             url, trigger_type, histogram_suffix,
             /*speculation_rules_params=*/std::nullopt, Referrer(),
             /*no_vary_search_hint=*/std::nullopt,
-            /*initiator_render_frame_host=*/nullptr, contents()->GetWeakPtr(),
+            /*initiator_render_frame_host=*/nullptr, initiator->GetWeakPtr(),
             ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
                                       ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
             /*should_warm_up_compositor=*/false,
@@ -376,6 +379,39 @@ TEST_F(PrerenderHostRegistryTest, CreateAndStartHost_Embedder_DirectURLInput) {
   // should be recorded on every prerender activation.
   histogram_tester().ExpectTotalCount(
       "Navigation.TimeToActivatePrerender.Embedder_DirectURLInput", 1u);
+}
+
+// A prerendered page is made in the default StoragePartition, so activating
+// one into a tab fixed to another partition would take the tab out of it.
+// Such a tab is not prerendered for, whoever asks -- the embedder, or the
+// page's speculation rules -- while an ordinary tab asking the same is.
+TEST_F(PrerenderHostRegistryTest, NoPrerenderForFixedStoragePartition) {
+  const GURL kInitialUrl("https://example.com/");
+  const GURL kPrerenderingUrl("https://example.com/next");
+  std::unique_ptr<TestWebContents> fixed = TestWebContents::Create(
+      browser_context(),
+      SiteInstanceImpl::CreateForFixedStoragePartition(
+          browser_context(), kInitialUrl,
+          StoragePartitionConfig::Create(browser_context(), "fixed",
+                                         "partition", /*in_memory=*/true)));
+  test::ScopedPrerenderWebContentsDelegate fixed_delegate(*fixed);
+  fixed->NavigateAndCommit(kInitialUrl);
+  ASSERT_TRUE(fixed->GetPrimaryMainFrame()
+                  ->GetSiteInstance()
+                  ->IsFixedStoragePartition());
+  PrerenderHostRegistry& fixed_registry = *fixed->GetPrerenderHostRegistry();
+
+  EXPECT_FALSE(fixed_registry.CreateAndStartHost(GeneratePrerenderAttributes(
+      kPrerenderingUrl, PreloadingTriggerType::kEmbedder, "DirectURLInput",
+      std::nullopt, fixed->GetPrimaryMainFrame(), fixed.get())));
+  EXPECT_FALSE(fixed_registry.CreateAndStartHost(GeneratePrerenderAttributes(
+      kPrerenderingUrl, PreloadingTriggerType::kSpeculationRule, "",
+      blink::mojom::SpeculationEagerness::kImmediate,
+      fixed->GetPrimaryMainFrame(), fixed.get())));
+
+  EXPECT_TRUE(registry().CreateAndStartHost(GeneratePrerenderAttributes(
+      kPrerenderingUrl, PreloadingTriggerType::kEmbedder, "DirectURLInput",
+      std::nullopt, contents()->GetPrimaryMainFrame())));
 }
 
 TEST_F(PrerenderHostRegistryTest, CreateAndStartHost_PreloadingConfigHoldback) {
