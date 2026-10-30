@@ -106,6 +106,19 @@ class WaczCollection {
   // scripts that hung off them.
   const std::vector<PageEntry>& pages() const { return pages_; }
 
+  // The moment a visit to `url` should start at: the time of the first page
+  // the list names at `url` whose capture the site answered with a success.
+  // Failing that, the first page at `url`; failing that, empty, which a lookup
+  // takes as the earliest capture.
+  //
+  // Not simply the first page at `url`, because a capture lists every page
+  // the browser landed on, and some of those were the site turning a visitor
+  // away for a moment -- a bot check that answers 401 and reloads the same
+  // URL once it is satisfied. Live, that is a step on the way in. Replayed,
+  // the reload asks again at the same moment and gets the same 401, so a
+  // visit begun there never gets in.
+  std::string LandingMoment(const GURL& url) const;
+
   // Every entry in the index, sorted as the index is.
   const std::vector<CdxjEntry>& index() const { return index_; }
 

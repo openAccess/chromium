@@ -358,6 +358,29 @@ std::optional<WaczCollection> WaczCollection::Open(base::File file) {
   return collection;
 }
 
+std::string WaczCollection::LandingMoment(const GURL& url) const {
+  const std::string key = ToSurt(url);
+  const PageEntry* first = nullptr;
+  for (const PageEntry& page : pages_) {
+    if (GURL(page.url) != url) {
+      continue;
+    }
+    if (!first) {
+      first = &page;
+    }
+    // The capture this page's moment would be served, which is the page's
+    // own record: the page list dates a page as its record is dated.
+    const CdxjEntry* entry =
+        key.empty()
+            ? nullptr
+            : FindNearestCapture(index_, key, ToIndexTimestamp(page.timestamp));
+    if (entry && entry->status.size() == 3 && entry->status[0] == '2') {
+      return page.timestamp;
+    }
+  }
+  return first ? first->timestamp : std::string();
+}
+
 std::optional<ArchivedResponse> WaczCollection::Lookup(
     const GURL& url,
     std::string_view timestamp) {

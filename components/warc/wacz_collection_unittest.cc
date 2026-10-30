@@ -87,7 +87,8 @@ class WaczCollectionTest : public testing::Test {
  protected:
   void SetUp() override { ASSERT_TRUE(temp_dir_.CreateUniqueTempDir()); }
 
-  // Adds a response for `url`, captured at `timestamp`.
+  // Adds a response for `url`, captured at `timestamp`. `head` begins with a
+  // status line, whose code the index carries as the tooling's does.
   void AddResponse(std::string_view url,
                    std::string_view timestamp,
                    std::string_view head,
@@ -107,7 +108,7 @@ class WaczCollectionTest : public testing::Test {
     // the archive is being assembled.
     index_ += base::StrCat(
         {ToSurt(GURL(std::string(url))), " ", timestamp, " {\"url\": \"", url,
-         "\", \"status\": \"200\", \"length\": \"",
+         "\", \"status\": \"", head.substr(9, 3), "\", \"length\": \"",
          base::NumberToString(member.size()), "\", \"offset\": \"",
          base::NumberToString(archive_.size()),
          "\", \"filename\": \"test.warc.gz\"}\n"});
@@ -374,6 +375,50 @@ TEST_F(WaczCollectionTest, ReadsThePagesTheCaptureVisited) {
   EXPECT_EQ("Page https://example.org/one", collection->pages()[0].title);
   // The line declaring the format is not a page.
   EXPECT_EQ("https://example.org/two", collection->pages()[1].url);
+}
+
+// A capture lists every page the browser landed on, including the moment a
+// site turned it away -- a bot check answering 401, which reloads the same URL
+// once satisfied. Replayed, that reload gets the same 401, so a visit has to
+// begin at the page the site let the browser in to.
+TEST_F(WaczCollectionTest, AVisitLandsWhereTheSiteLetTheBrowserIn) {
+  AddResponse("https://example.org/", "20260101120000",
+              "HTTP/1.1 401 Unauthorized\r\n\r\n", "checking your device");
+  AddResponse("https://example.org/", "20260101120003",
+              "HTTP/1.1 200 OK\r\n\r\n", "front page");
+  AddResponse("https://example.org/", "20260101120030",
+              "HTTP/1.1 200 OK\r\n\r\n", "front page again");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+
+  EXPECT_EQ("20260101120003",
+            collection->LandingMoment(GURL("https://example.org/")));
+}
+
+// A page the site only ever refused is still the page that was captured, and
+// the first of them is still where the capture was there.
+TEST_F(WaczCollectionTest, AVisitTheSiteNeverLetInLandsAtItsFirstPage) {
+  AddResponse("https://example.org/gone", "20260101120000",
+              "HTTP/1.1 404 Not Found\r\n\r\n", "not here");
+  AddResponse("https://example.org/gone", "20260101120005",
+              "HTTP/1.1 404 Not Found\r\n\r\n", "still not here");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+
+  EXPECT_EQ("20260101120000",
+            collection->LandingMoment(GURL("https://example.org/gone")));
+}
+
+TEST_F(WaczCollectionTest, AVisitToNoListedPageHasNoMoment) {
+  AddResponse("https://example.org/", "20260101120000",
+              "HTTP/1.1 200 OK\r\n\r\n", "front page");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+
+  EXPECT_EQ("", collection->LandingMoment(GURL("https://other.example/")));
 }
 
 // Asking what an archive holds is a smaller question than being ready to

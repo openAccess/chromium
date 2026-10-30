@@ -5,11 +5,14 @@
 #include "chrome/browser/wacz_replay.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/containers/span.h"
+#include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
@@ -64,11 +67,8 @@ scoped_refptr<warc::WaczArchive>& Archive() {
   return *archive;
 }
 
-// Reads the archive's page list. Opening a file and reading it both block, so
-// this runs off the UI thread and the answer comes back to it.
-std::vector<warc::PageEntry> ReadPageList(base::FilePath path) {
-  return warc::ReadPageList(
-      base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ));
+base::File OpenArchiveFile(const base::FilePath& path) {
+  return base::File(path, base::File::FLAG_OPEN | base::File::FLAG_READ);
 }
 
 // The partition `frame` is in, or for a worker the one its process serves.
@@ -120,19 +120,31 @@ std::string MomentOf(const std::vector<warc::PageEntry>& pages,
   return std::string();
 }
 
-void OpenTabsForPages(base::WeakPtr<BrowserWindowInterface> browser,
-                      std::vector<GURL> urls,
-                      std::vector<warc::PageEntry> pages) {
-  if (!browser) {
-    return;
-  }
+// A tab to open: the URL it lands on, and the moment it is replayed at.
+using Landing = std::pair<GURL, std::string>;
+
+// Where each of `urls` opens, from the archive at `path`. Opening a file and
+// reading it both block, so this runs off the UI thread and the answer comes
+// back to it.
+//
+// The whole index is read here, and read again when the archive first serves:
+// the page list alone cannot say which of a URL's pages the site answered,
+// and only one of them is somewhere a visit can begin.
+std::vector<Landing> ReadLandings(base::FilePath path, std::vector<GURL> urls) {
+  std::optional<warc::WaczCollection> collection =
+      warc::WaczCollection::Open(OpenArchiveFile(path));
+  // A container with no index serves nothing, but still says which pages it
+  // holds, and a tab that plainly has nothing is the honest answer.
+  const std::vector<warc::PageEntry> pages =
+      collection ? collection->pages()
+                 : warc::ReadPageList(OpenArchiveFile(path));
 
   // Told only which archive to open, the archive says where to start: the
   // first page of its list is where the capture began. An archive naming no
   // pages opens no tab, because there is nothing in it to land on.
   if (urls.empty()) {
     if (pages.empty()) {
-      return;
+      return {};
     }
     urls.push_back(GURL(pages.front().url));
   }
@@ -140,8 +152,22 @@ void OpenTabsForPages(base::WeakPtr<BrowserWindowInterface> browser,
   // Each tab at its own page's moment. A tab left to the first request would
   // have no time to serve but the earliest the archive holds, which is the
   // same answer only for a capture made in one sitting.
-  for (const GURL& url : urls) {
-    OpenReplayTab(browser.get(), url, MomentOf(pages, url));
+  std::vector<Landing> landings;
+  for (GURL& url : urls) {
+    std::string moment =
+        collection ? collection->LandingMoment(url) : MomentOf(pages, url);
+    landings.emplace_back(std::move(url), std::move(moment));
+  }
+  return landings;
+}
+
+void OpenTabs(base::WeakPtr<BrowserWindowInterface> browser,
+              std::vector<Landing> landings) {
+  if (!browser) {
+    return;
+  }
+  for (const auto& [url, moment] : landings) {
+    OpenReplayTab(browser.get(), url, moment);
   }
 }
 
@@ -183,9 +209,8 @@ bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id) {
 void OpenReplayTabs(BrowserWindowInterface* browser, std::vector<GURL> urls) {
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
-      base::BindOnce(&ReadPageList, ArchivePath()),
-      base::BindOnce(&OpenTabsForPages, browser->GetWeakPtr(),
-                     std::move(urls)));
+      base::BindOnce(&ReadLandings, ArchivePath(), std::move(urls)),
+      base::BindOnce(&OpenTabs, browser->GetWeakPtr()));
 }
 
 void BindFactory(
