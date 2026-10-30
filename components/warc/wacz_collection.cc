@@ -5,6 +5,8 @@
 #include "components/warc/wacz_collection.h"
 
 #include <algorithm>
+#include <array>
+#include <memory>
 #include <utility>
 
 #include "base/json/json_reader.h"
@@ -18,7 +20,9 @@
 #include "components/warc/warc_record_parser.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
+#include "third_party/brotli/include/brotli/decode.h"
 #include "third_party/zlib/google/compression_utils.h"
+#include "third_party/zstd/src/lib/zstd.h"
 
 namespace warc {
 
@@ -135,6 +139,64 @@ void RemoveHeadersUnsafeForReplay(net::HttpResponseHeaders& headers) {
   headers.RemoveHeader("NEL");
 }
 
+// The content codings a browser asks for, and so the ones a capture of a real
+// site holds: gzip still, but brotli and zstd for much of what a large site
+// serves. Each is decoded with the library the network service would have
+// used, whole, since the body is already whole in memory.
+
+bool DecodeGzip(base::span<const uint8_t> body, std::string& decoded) {
+  return compression::GzipUncompress(AsStringView(body), &decoded);
+}
+
+bool DecodeBrotli(base::span<const uint8_t> body, std::string& decoded) {
+  std::unique_ptr<BrotliDecoderState, decltype(&BrotliDecoderDestroyInstance)>
+      state(BrotliDecoderCreateInstance(nullptr, nullptr, nullptr),
+            &BrotliDecoderDestroyInstance);
+  if (!state) {
+    return false;
+  }
+  size_t available_in = body.size();
+  const uint8_t* next_in = body.data();
+  BrotliDecoderResult result;
+  do {
+    // With no output buffer of its own the decoder keeps what it has made,
+    // and hands it over here.
+    size_t available_out = 0;
+    result = BrotliDecoderDecompressStream(state.get(), &available_in, &next_in,
+                                           &available_out, nullptr, nullptr);
+    size_t size = 0;
+    const uint8_t* output = BrotliDecoderTakeOutput(state.get(), &size);
+    decoded.append(reinterpret_cast<const char*>(output), size);
+  } while (result == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT);
+  // NEEDS_MORE_INPUT means the stored body stops short of the end of the
+  // stream, which is a truncated capture rather than a page.
+  return result == BROTLI_DECODER_RESULT_SUCCESS;
+}
+
+bool DecodeZstd(base::span<const uint8_t> body, std::string& decoded) {
+  std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> context(
+      ZSTD_createDCtx(), &ZSTD_freeDCtx);
+  if (!context) {
+    return false;
+  }
+  ZSTD_inBuffer input = {body.data(), body.size(), 0};
+  std::array<char, 64 * 1024> buffer;
+  ZSTD_outBuffer output;
+  size_t result;
+  do {
+    output = {buffer.data(), buffer.size(), 0};
+    result = ZSTD_decompressStream(context.get(), &output, &input);
+    if (ZSTD_isError(result)) {
+      return false;
+    }
+    decoded.append(buffer.data(), output.pos);
+    // A full buffer may mean more is waiting inside the decoder even once the
+    // input is all read.
+  } while (input.pos < input.size || output.pos == output.size);
+  // Anything but 0 is the decoder still mid-frame: a truncated capture.
+  return result == 0;
+}
+
 // Decodes a body that was stored in the encoding it travelled in.
 //
 // A capture keeps what arrived on the wire, which is the point of it: the
@@ -150,27 +212,36 @@ void RemoveHeadersUnsafeForReplay(net::HttpResponseHeaders& headers) {
 // function is what the page saw when it was captured, which is the thing
 // replay is for.
 //
-// Returns false if the body is in an encoding this cannot decode, which is
-// better than handing over bytes the page will misread as content.
+// Returns false if the body is in an encoding this cannot decode, or will not
+// decode, which is better than handing over bytes the page will misread as
+// content.
 bool DecodeBodyForReplay(ArchivedResponse& response) {
   const std::optional<std::string> encoding =
       response.headers->GetNormalizedHeader("Content-Encoding");
   if (!encoding || encoding->empty()) {
     return true;
   }
-  if (!base::EqualsCaseInsensitiveASCII(*encoding, "gzip") &&
-      !base::EqualsCaseInsensitiveASCII(*encoding, "x-gzip")) {
+
+  bool (*decode)(base::span<const uint8_t>, std::string&) = nullptr;
+  if (base::EqualsCaseInsensitiveASCII(*encoding, "gzip") ||
+      base::EqualsCaseInsensitiveASCII(*encoding, "x-gzip")) {
+    decode = &DecodeGzip;
+  } else if (base::EqualsCaseInsensitiveASCII(*encoding, "br")) {
+    decode = &DecodeBrotli;
+  } else if (base::EqualsCaseInsensitiveASCII(*encoding, "zstd")) {
+    decode = &DecodeZstd;
+  } else {
     LOG(ERROR) << "Cannot replay a body stored as " << *encoding
                << "; serving nothing rather than something unreadable.";
     return false;
   }
 
+  // A response with no body -- a redirect, a 204 -- may still name the coding
+  // its body would have had. There is nothing to decode, and to every decoder
+  // nothing is a stream cut short.
   std::string decoded;
-  if (!compression::GzipUncompress(
-          std::string_view(reinterpret_cast<const char*>(response.body.data()),
-                           response.body.size()),
-          &decoded)) {
-    LOG(ERROR) << "A stored gzip body would not decode.";
+  if (!response.body.empty() && !decode(response.body, decoded)) {
+    LOG(ERROR) << "A body stored as " << *encoding << " would not decode.";
     return false;
   }
   response.body.assign(decoded.begin(), decoded.end());

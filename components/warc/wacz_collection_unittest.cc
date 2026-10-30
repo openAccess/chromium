@@ -20,7 +20,9 @@
 #include "components/warc/surt.h"
 #include "components/warc/warc_record.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/brotli/include/brotli/encode.h"
 #include "third_party/zlib/google/zip.h"
+#include "third_party/zstd/src/lib/zstd.h"
 #include "url/gurl.h"
 
 namespace warc {
@@ -45,6 +47,36 @@ std::vector<uint8_t> AsMember(base::span<const uint8_t> data) {
   EXPECT_TRUE(writer.Write(data));
   EXPECT_TRUE(writer.Finish());
   return out;
+}
+
+std::string AsBrotli(std::string_view data) {
+  std::string out(BrotliEncoderMaxCompressedSize(data.size()), '\0');
+  size_t size = out.size();
+  EXPECT_TRUE(BrotliEncoderCompress(
+      BROTLI_DEFAULT_QUALITY, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_TEXT,
+      data.size(), reinterpret_cast<const uint8_t*>(data.data()), &size,
+      reinterpret_cast<uint8_t*>(out.data())));
+  out.resize(size);
+  return out;
+}
+
+std::string AsZstd(std::string_view data) {
+  std::string out(ZSTD_compressBound(data.size()), '\0');
+  const size_t size =
+      ZSTD_compress(out.data(), out.size(), data.data(), data.size(), 3);
+  EXPECT_FALSE(ZSTD_isError(size));
+  out.resize(size);
+  return out;
+}
+
+// A page larger than any one buffer a decoder fills, so that decoding it takes
+// more than one round.
+std::string LargePage() {
+  std::string page = "<html>";
+  for (int i = 0; page.size() < 300 * 1024; ++i) {
+    page += base::StrCat({"<p>paragraph ", base::NumberToString(i), "</p>"});
+  }
+  return page + "</html>";
 }
 
 // Builds a container the way the tooling does: records written by this code's
@@ -169,16 +201,96 @@ TEST_F(WaczCollectionTest, ABodyStoredEncodedComesBackDecoded) {
   EXPECT_EQ("20", response->headers->GetNormalizedHeader("Content-Length"));
 }
 
-TEST_F(WaczCollectionTest, ABodyInAnEncodingWeCannotDecodeIsNotServed) {
-  // Better nothing than bytes the page will misread as content.
+TEST_F(WaczCollectionTest, ABodyStoredAsBrotliComesBackDecoded) {
+  // Much of what a large site serves goes out as brotli rather than gzip.
+  const std::string page = LargePage();
+  AddResponse("https://example.org/br", "20260101120000",
+              "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+              "Content-Encoding: br\r\n\r\n",
+              AsBrotli(page));
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> response =
+      collection->Lookup(GURL("https://example.org/br"), "20260101120000");
+  ASSERT_TRUE(response.has_value());
+
+  EXPECT_EQ(page, ToString(response->body));
+  EXPECT_FALSE(response->headers->HasHeader("Content-Encoding"));
+  EXPECT_EQ(base::NumberToString(page.size()),
+            response->headers->GetNormalizedHeader("Content-Length"));
+}
+
+TEST_F(WaczCollectionTest, ABodyStoredAsZstdComesBackDecoded) {
+  const std::string page = LargePage();
+  AddResponse("https://example.org/zstd", "20260101120000",
+              "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n"
+              "Content-Encoding: zstd\r\n\r\n",
+              AsZstd(page));
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> response =
+      collection->Lookup(GURL("https://example.org/zstd"), "20260101120000");
+  ASSERT_TRUE(response.has_value());
+
+  EXPECT_EQ(page, ToString(response->body));
+  EXPECT_FALSE(response->headers->HasHeader("Content-Encoding"));
+  EXPECT_EQ(base::NumberToString(page.size()),
+            response->headers->GetNormalizedHeader("Content-Length"));
+}
+
+TEST_F(WaczCollectionTest, ATruncatedBodyIsNotServed) {
+  // A capture cut off mid-body decodes as far as it goes and then stops; what
+  // it decodes to is not the page.
+  const std::string brotli = AsBrotli(LargePage());
+  const std::string zstd = AsZstd(LargePage());
   AddResponse("https://example.org/br", "20260101120000",
               "HTTP/1.1 200 OK\r\nContent-Encoding: br\r\n\r\n",
-              "not really brotli");
+              std::string_view(brotli).substr(0, brotli.size() / 2));
+  AddResponse("https://example.org/zstd", "20260101120000",
+              "HTTP/1.1 200 OK\r\nContent-Encoding: zstd\r\n\r\n",
+              std::string_view(zstd).substr(0, zstd.size() / 2));
 
   std::optional<WaczCollection> collection = Build();
   ASSERT_TRUE(collection.has_value());
   EXPECT_FALSE(
       collection->Lookup(GURL("https://example.org/br"), "20260101120000")
+          .has_value());
+  EXPECT_FALSE(
+      collection->Lookup(GURL("https://example.org/zstd"), "20260101120000")
+          .has_value());
+}
+
+TEST_F(WaczCollectionTest, AnEncodedResponseWithNoBodyIsServed) {
+  // A redirect names the coding its body would have had, and has none: an
+  // empty stream to every decoder, and still the redirect the page followed.
+  AddResponse("https://example.org/moved", "20260101120000",
+              "HTTP/1.1 301 Moved Permanently\r\n"
+              "Location: https://example.org/\r\n"
+              "Content-Encoding: br\r\n\r\n",
+              "");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> response =
+      collection->Lookup(GURL("https://example.org/moved"), "20260101120000");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_EQ(301, response->headers->response_code());
+  EXPECT_TRUE(response->body.empty());
+  EXPECT_FALSE(response->headers->HasHeader("Content-Encoding"));
+}
+
+TEST_F(WaczCollectionTest, ABodyInAnEncodingWeCannotDecodeIsNotServed) {
+  // Better nothing than bytes the page will misread as content.
+  AddResponse("https://example.org/lzw", "20260101120000",
+              "HTTP/1.1 200 OK\r\nContent-Encoding: compress\r\n\r\n",
+              "not really compressed");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  EXPECT_FALSE(
+      collection->Lookup(GURL("https://example.org/lzw"), "20260101120000")
           .has_value());
 }
 

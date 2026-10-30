@@ -52,7 +52,9 @@ static_library("replay") {
     "//net",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
+    "//third_party/brotli:dec",
     "//third_party/zlib/google:compression_utils",
+    "//third_party/zstd:decompress",
     "//url",
   ]
 }
@@ -98,6 +100,8 @@ source_set("unit_tests") {
     "//services/network/public/cpp",
     "//services/network/public/mojom",
     "//testing/gtest",
+    "//third_party/brotli:enc",
     "//third_party/zlib/google:zip",
+    "//third_party/zstd:compress",
   ]
 }
