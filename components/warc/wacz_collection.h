@@ -98,6 +98,9 @@ class WaczCollection {
   // `timestamp` may be written either way a WACZ writes one; it is passed
   // through ToIndexTimestamp() so that a page's own time can be handed
   // straight back.
+  //
+  // A capture of the whole resource is preferred to a nearer capture of part
+  // of it -- a 206 -- which is served only where there is nothing else.
   std::optional<ArchivedResponse> Lookup(const GURL& url,
                                          std::string_view timestamp);
 

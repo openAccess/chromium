@@ -4,15 +4,20 @@
 
 #include "components/warc/wacz_url_loader_factory.h"
 
+#include <algorithm>
+#include <optional>
 #include <utility>
+#include <vector>
 
 #include "base/byte_size.h"
 #include "base/files/file.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/weak_ptr.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
@@ -22,6 +27,9 @@
 #include "mojo/public/cpp/system/data_pipe_producer.h"
 #include "mojo/public/cpp/system/string_data_source.h"
 #include "net/base/net_errors.h"
+#include "net/http/http_byte_range.h"
+#include "net/http/http_request_headers.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -59,6 +67,84 @@ std::string MissingPageBody(const GURL& url) {
   });
 }
 
+// The single byte range `request` asks for, or nullopt if it asks for the
+// whole resource. A request for several ranges at once is answered with the
+// whole resource, as a server may: assembling a multipart answer would serve
+// the same bytes, wrapped in a format no player of archived media relies on.
+std::optional<net::HttpByteRange> RequestedRange(
+    const network::ResourceRequest& request) {
+  std::optional<std::string> header =
+      request.headers.GetHeader(net::HttpRequestHeaders::kRange);
+  std::vector<net::HttpByteRange> ranges;
+  if (!header || !net::HttpUtil::ParseRangeHeader(*header, &ranges) ||
+      ranges.size() != 1) {
+    return std::nullopt;
+  }
+  return ranges.front();
+}
+
+// `stored` answered for `range` alone, as the server that sent it would have
+// answered: a 206 holding those bytes, or a 416 if the resource has no such
+// bytes. Nullopt if the archive does not hold them -- a capture of part of a
+// resource answers only for the part it holds.
+//
+// What the archive holds for a media file is the whole of it, fetched beside
+// the ranges a player asked for, and a player replaying it asks for ranges
+// again -- often not the ones it asked for live. Handed the whole file instead
+// of the bytes it asked for, a player that appends what it is given to its
+// buffer appends the wrong bytes, and the video does not play.
+std::optional<ArchivedResponse> AnswerRange(ArchivedResponse stored,
+                                            net::HttpByteRange range) {
+  net::HttpResponseHeaders& headers = *stored.headers;
+  const int64_t held = static_cast<int64_t>(stored.body.size());
+  int64_t first_held = 0;
+  int64_t length = 0;
+  if (headers.response_code() == 200) {
+    // A truncated capture holds less than the resource it was a capture of,
+    // and the resource's length is what a range is measured against.
+    const std::optional<base::ByteSize> declared = headers.GetContentLength();
+    length =
+        declared
+            ? std::max(held, base::checked_cast<int64_t>(declared->InBytes()))
+            : held;
+  } else if (headers.response_code() == 206) {
+    int64_t last_held = 0;
+    if (!headers.GetContentRangeFor206(&first_held, &last_held, &length) ||
+        length < 0 || last_held - first_held + 1 != held) {
+      return std::nullopt;
+    }
+  } else {
+    // A redirect or an error has no bytes to take a range of, and is what the
+    // server said whatever range was asked for.
+    return stored;
+  }
+
+  if (!range.ComputeBounds(length)) {
+    headers.ReplaceStatusLine("HTTP/1.1 416 Range Not Satisfiable");
+    headers.SetHeader("Content-Range",
+                      base::StrCat({"bytes */", base::NumberToString(length)}));
+    headers.SetHeader("Content-Length", "0");
+    stored.body.clear();
+    return stored;
+  }
+  const int64_t first = range.first_byte_position();
+  const int64_t last = range.last_byte_position();
+  if (first < first_held || last >= first_held + held) {
+    return std::nullopt;
+  }
+
+  stored.body =
+      std::vector<uint8_t>(stored.body.begin() + (first - first_held),
+                           stored.body.begin() + (last - first_held + 1));
+  headers.ReplaceStatusLine("HTTP/1.1 206 Partial Content");
+  headers.SetHeader("Content-Range",
+                    base::StrCat({"bytes ", base::NumberToString(first), "-",
+                                  base::NumberToString(last), "/",
+                                  base::NumberToString(length)}));
+  headers.SetHeader("Content-Length", base::NumberToString(last - first + 1));
+  return stored;
+}
+
 // Serves one request, then deletes itself.
 //
 // Owns itself for as long as its bindings live, as a loader does: the client
@@ -87,8 +173,15 @@ class WaczUrlLoader : public network::mojom::URLLoader {
     missing_page_for_ = std::move(url);
   }
 
+  // Remembers that only part of the resource was asked for.
+  void set_range(std::optional<net::HttpByteRange> range) { range_ = range; }
+
   // What the archive had to say.
   void Serve(std::optional<ArchivedResponse> response) {
+    if (response && range_) {
+      response = AnswerRange(std::move(*response), *range_);
+      range_.reset();
+    }
     if (!response) {
       // Nothing else to offer, and nowhere else to look. Saying so is the
       // point: a resource the archive lacks must be seen to be missing.
@@ -184,6 +277,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
   mojo::Remote<network::mojom::URLLoaderClient> client_;
 
   std::optional<GURL> missing_page_for_;
+  std::optional<net::HttpByteRange> range_;
   std::string body_;
   size_t body_size_ = 0;
   std::unique_ptr<mojo::DataPipeProducer> producer_;
@@ -296,6 +390,8 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
     url_loader->Serve(std::nullopt);
     return;
   }
+
+  url_loader->set_range(RequestedRange(request));
 
   archive_->source()
       .AsyncCall(&WaczArchiveSource::Lookup)

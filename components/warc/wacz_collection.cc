@@ -388,8 +388,19 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
   if (key.empty()) {
     return std::nullopt;
   }
-  const CdxjEntry* entry =
-      FindNearestCapture(index_, key, ToIndexTimestamp(timestamp));
+  // A capture of the whole resource, if there is one, over a nearer capture
+  // of part of it. A media player asks for ranges, and the archive holds the
+  // partial responses it was given beside a complete copy fetched to go with
+  // them -- fetched after them, so a moment near the page is nearer the parts.
+  // The whole can answer any request for the resource, ranged or not; a part
+  // answers only the request that was made for it.
+  const std::string moment = ToIndexTimestamp(timestamp);
+  const CdxjEntry* entry = FindNearestCapture(
+      index_, key, moment,
+      [](const CdxjEntry& capture) { return capture.status != "206"; });
+  if (!entry) {
+    entry = FindNearestCapture(index_, key, moment);
+  }
   if (!entry) {
     return std::nullopt;
   }

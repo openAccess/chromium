@@ -125,6 +125,15 @@ std::vector<CdxjEntry> ParseCdxj(std::string_view text) {
 const CdxjEntry* FindNearestCapture(base::span<const CdxjEntry> entries,
                                     std::string_view key,
                                     std::string_view timestamp) {
+  return FindNearestCapture(entries, key, timestamp,
+                            [](const CdxjEntry&) { return true; });
+}
+
+const CdxjEntry* FindNearestCapture(
+    base::span<const CdxjEntry> entries,
+    std::string_view key,
+    std::string_view timestamp,
+    base::FunctionRef<bool(const CdxjEntry&)> accept) {
   // The index is sorted by key, so the captures of one URL are a run within
   // it and a search finds where that run begins.
   const auto begin = std::lower_bound(
@@ -136,6 +145,9 @@ const CdxjEntry* FindNearestCapture(base::span<const CdxjEntry> entries,
   const CdxjEntry* nearest = nullptr;
   base::TimeDelta nearest_distance;
   for (auto it = begin; it != entries.end() && it->key == key; ++it) {
+    if (!accept(*it)) {
+      continue;
+    }
     // Compared as times rather than as the digits they are written in. Read
     // as numbers, a capture a second before midnight looks further from one
     // just after it than a capture a minute later does, and an overnight

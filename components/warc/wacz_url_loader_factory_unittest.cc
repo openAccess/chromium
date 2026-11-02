@@ -26,6 +26,7 @@
 #include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_request_headers.h"
+#include "net/http/http_response_headers.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/test/test_url_loader_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -70,8 +71,9 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
 
     index_ += base::StrCat(
         {ToSurt(GURL(std::string(url))), " ", timestamp, " {\"url\": \"", url,
-         "\", \"length\": \"", base::NumberToString(member.size()),
-         "\", \"offset\": \"", base::NumberToString(archive_.size()),
+         "\", \"status\": \"", head.substr(9, 3), "\", \"length\": \"",
+         base::NumberToString(member.size()), "\", \"offset\": \"",
+         base::NumberToString(archive_.size()),
          "\", \"filename\": \"t.warc.gz\"}\n"});
     archive_.insert(archive_.end(), member.begin(), member.end());
   }
@@ -103,10 +105,14 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
   void Start(mojo::Remote<network::mojom::URLLoaderFactory>& factory,
              std::string_view url,
              network::TestURLLoaderClient* client,
-             std::string_view method = "GET") {
+             std::string_view method = "GET",
+             std::string_view range = "") {
     network::ResourceRequest request;
     request.url = GURL(std::string(url));
     request.method = std::string(method);
+    if (!range.empty()) {
+      request.headers.SetHeader(net::HttpRequestHeaders::kRange, range);
+    }
 
     factory->CreateLoaderAndStart(
         loader_.InitWithNewPipeAndPassReceiver(), /*request_id=*/1,
@@ -121,8 +127,9 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
   // wait for a write that is waiting for the test.
   std::string FetchBody(mojo::Remote<network::mojom::URLLoaderFactory>& factory,
                         std::string_view url,
-                        network::TestURLLoaderClient* client) {
-    Start(factory, url, client);
+                        network::TestURLLoaderClient* client,
+                        std::string_view range = "") {
+    Start(factory, url, client, "GET", range);
     client->RunUntilResponseReceived();
     if (!client->response_body().is_valid()) {
       client->RunUntilComplete();
@@ -156,8 +163,9 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
       mojo::Remote<network::mojom::URLLoaderFactory>& factory,
       std::string_view url,
       network::TestURLLoaderClient* client,
-      std::string_view method = "GET") {
-    Start(factory, url, client, method);
+      std::string_view method = "GET",
+      std::string_view range = "") {
+    Start(factory, url, client, method, range);
     client->RunUntilComplete();
   }
 
@@ -377,6 +385,130 @@ TEST_F(WaczUrlLoaderFactoryTest, EachFactoryServesItsOwnMoment) {
   network::TestURLLoaderClient again_client;
   EXPECT_EQ("<html>march</html>",
             FetchBody(march, "https://example.org/news", &again_client));
+}
+
+// A media player asks for the bytes it wants, and appends what it is given to
+// its buffer. Handed the whole file instead, it appends the wrong bytes.
+TEST_F(WaczUrlLoaderFactoryTest, ARangeIsAnsweredWithThoseBytes) {
+  AddResponse("https://example.org/v.mp4",
+              "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
+              "Content-Length: 10\r\nAccept-Ranges: bytes\r\n\r\n",
+              "0123456789");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  EXPECT_EQ("2345", FetchBody(factory, "https://example.org/v.mp4", &client,
+                              "bytes=2-5"));
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+  const net::HttpResponseHeaders& headers = *client.response_head()->headers;
+  EXPECT_EQ(206, headers.response_code());
+  EXPECT_EQ("bytes 2-5/10", headers.GetNormalizedHeader("Content-Range"));
+  EXPECT_EQ("4", headers.GetNormalizedHeader("Content-Length"));
+  EXPECT_EQ(4, client.response_head()->content_length);
+  EXPECT_EQ("video/mp4", client.response_head()->mime_type);
+  loader_.reset();
+
+  // To the end, and the last few bytes, as a player reading an index asks.
+  network::TestURLLoaderClient to_end;
+  EXPECT_EQ("789", FetchBody(factory, "https://example.org/v.mp4", &to_end,
+                             "bytes=7-"));
+  EXPECT_EQ(
+      "bytes 7-9/10",
+      to_end.response_head()->headers->GetNormalizedHeader("Content-Range"));
+  loader_.reset();
+
+  network::TestURLLoaderClient suffix;
+  EXPECT_EQ("6789", FetchBody(factory, "https://example.org/v.mp4", &suffix,
+                              "bytes=-4"));
+  EXPECT_EQ(
+      "bytes 6-9/10",
+      suffix.response_head()->headers->GetNormalizedHeader("Content-Range"));
+}
+
+TEST_F(WaczUrlLoaderFactoryTest, ARangeTheResourceDoesNotHaveIsRefused) {
+  AddResponse("https://example.org/v.mp4", "HTTP/1.1 200 OK\r\n\r\n",
+              "0123456789");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  EXPECT_EQ("", FetchBody(factory, "https://example.org/v.mp4", &client,
+                          "bytes=20-"));
+  const net::HttpResponseHeaders& headers = *client.response_head()->headers;
+  EXPECT_EQ(416, headers.response_code());
+  EXPECT_EQ("bytes */10", headers.GetNormalizedHeader("Content-Range"));
+}
+
+// The archive holds the partial response a player was given live and, fetched
+// after it, the whole file. The whole file answers whatever is asked of it
+// now; the part only what was asked of it then.
+TEST_F(WaczUrlLoaderFactoryTest, TheWholeIsServedRatherThanANearerPart) {
+  AddResponse("https://example.org/v.mp4",
+              "HTTP/1.1 206 Partial Content\r\n"
+              "Content-Range: bytes 0-1/10\r\n\r\n",
+              "01", "20260101120000");
+  AddResponse("https://example.org/v.mp4", "HTTP/1.1 200 OK\r\n\r\n",
+              "0123456789", "20260101120005");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory =
+      BuildFactory("20260101120000");
+
+  network::TestURLLoaderClient whole;
+  EXPECT_EQ("0123456789",
+            FetchBody(factory, "https://example.org/v.mp4", &whole));
+  EXPECT_EQ(200, whole.response_head()->headers->response_code());
+  loader_.reset();
+
+  network::TestURLLoaderClient part;
+  EXPECT_EQ("456", FetchBody(factory, "https://example.org/v.mp4", &part,
+                             "bytes=4-6"));
+  EXPECT_EQ(206, part.response_head()->headers->response_code());
+}
+
+// Where only a part was captured, it answers for the bytes it holds, and the
+// rest is missing -- not a slice of something else passed off as them.
+TEST_F(WaczUrlLoaderFactoryTest, APartAnswersOnlyForTheBytesItHolds) {
+  AddResponse("https://example.org/v.mp4",
+              "HTTP/1.1 206 Partial Content\r\n"
+              "Content-Range: bytes 2-5/10\r\n\r\n",
+              "2345");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient inside;
+  EXPECT_EQ("34", FetchBody(factory, "https://example.org/v.mp4", &inside,
+                            "bytes=3-4"));
+  EXPECT_EQ(
+      "bytes 3-4/10",
+      inside.response_head()->headers->GetNormalizedHeader("Content-Range"));
+  loader_.reset();
+
+  network::TestURLLoaderClient outside;
+  FetchExpectingFailure(factory, "https://example.org/v.mp4", &outside, "GET",
+                        "bytes=4-8");
+  EXPECT_EQ(net::ERR_FILE_NOT_FOUND, outside.completion_status().error_code);
+}
+
+// Several ranges at once may be answered with the whole resource, and are.
+TEST_F(WaczUrlLoaderFactoryTest, SeveralRangesAreAnsweredWithTheWhole) {
+  AddResponse("https://example.org/v.mp4", "HTTP/1.1 200 OK\r\n\r\n",
+              "0123456789");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  EXPECT_EQ("0123456789", FetchBody(factory, "https://example.org/v.mp4",
+                                    &client, "bytes=0-1,5-6"));
+  EXPECT_EQ(200, client.response_head()->headers->response_code());
+}
+
+// A redirect is what the server said whatever range was asked for.
+TEST_F(WaczUrlLoaderFactoryTest, ARangedRequestForARedirectGetsTheRedirect) {
+  AddResponse("https://example.org/old",
+              "HTTP/1.1 302 Found\r\nLocation: https://example.org/new\r\n\r\n",
+              "");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  FetchBody(factory, "https://example.org/old", &client, "bytes=0-1");
+  ASSERT_TRUE(client.response_head());
+  EXPECT_EQ(302, client.response_head()->headers->response_code());
 }
 
 TEST_F(WaczUrlLoaderFactoryTest, AnUnreadableArchiveServesNothing) {

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/functional/function_ref.h"
 
 namespace warc {
 
@@ -80,6 +81,13 @@ std::vector<CdxjEntry> ParseCdxj(std::string_view text);
 const CdxjEntry* FindNearestCapture(base::span<const CdxjEntry> entries,
                                     std::string_view key,
                                     std::string_view timestamp);
+
+// As above, among only the captures `accept` takes.
+const CdxjEntry* FindNearestCapture(
+    base::span<const CdxjEntry> entries,
+    std::string_view key,
+    std::string_view timestamp,
+    base::FunctionRef<bool(const CdxjEntry&)> accept);
 
 }  // namespace warc
 
