@@ -23,7 +23,6 @@
 #include "chrome/common/chrome_paths.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/network_service_instance.h"
-#include "content/public/browser/reload_type.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/visibility.h"
@@ -149,18 +148,22 @@ void WarcTabCapture::Start(content::WebContents* web_contents) {
 std::unique_ptr<content::WebContents> WarcTabCapture::StartInEmptyState(
     content::WebContents* web_contents) {
   const GURL url = web_contents->GetLastCommittedURL();
-  if (!url.SchemeIsHTTPOrHTTPS()) {
-    return nullptr;
-  }
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
 
   // Fixed, as a replay tab's is, so the tab keeps its partition wherever it
   // goes; and fixed from its first frame, so nothing it loads is ever loaded
   // with the profile's own state.
+  //
+  // The partition is only kept once the tab's first SiteInstance has a site.
+  // about:blank leaves the site unassigned and the partition with it, so the
+  // next page would be loaded in the profile's own. An empty URL is given a
+  // site of its own, which holds the partition until a page replaces it.
   content::WebContents::CreateParams params(
       profile, content::SiteInstance::CreateForFixedStoragePartition(
-                   profile, url,
+                   profile,
+                   content::SiteInstance::ShouldAssignSiteForURL(url) ? url
+                                                                      : GURL(),
                    content::StoragePartitionConfig::Create(
                        profile, kCapturePartitionDomain,
                        base::UnguessableToken::Create().ToString(),
@@ -171,7 +174,9 @@ std::unique_ptr<content::WebContents> WarcTabCapture::StartInEmptyState(
       content::WebContents::Create(params);
 
   Start(fresh.get());
-  FromWebContents(fresh.get())->initial_url_ = url;
+  if (!url.is_empty() && !url.IsAboutBlank()) {
+    FromWebContents(fresh.get())->initial_url_ = url;
+  }
   return fresh;
 }
 
@@ -240,17 +245,7 @@ void WarcTabCapture::OnCaptureOpened(base::WeakPtr<WarcTabCapture> self,
 }
 
 void WarcTabCapture::OnCaptureStarted() {
-  if (initial_url_) {
-    LoadInitialUrl();
-    return;
-  }
-  // Load the page again now that its requests will be recorded, and from the
-  // network: a response served from the cache never reaches the recorder.
-  content::NavigationController& controller = web_contents()->GetController();
-  if (web_contents()->GetLastCommittedURL().SchemeIsHTTPOrHTTPS()) {
-    controller.Reload(content::ReloadType::BYPASSING_CACHE,
-                      /*check_for_repost=*/true);
-  }
+  LoadInitialUrl();
 }
 
 void WarcTabCapture::LoadInitialUrl() {

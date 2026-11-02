@@ -49,15 +49,12 @@ class WarcTabCapture : public content::WebContentsObserver,
   // Whether `web_contents` is being archived on its own.
   static bool IsCapturing(content::WebContents* web_contents);
 
-  // Starts archiving `web_contents` as it is, unless it already is: its
-  // current page is reloaded from the network, but in whatever state the tab
-  // already has.
-  static void Start(content::WebContents* web_contents);
-
   // Makes the tab that archives what `web_contents` shows, from an empty state
   // (see above), and starts archiving it. The caller puts the returned tab in
   // place of `web_contents`; it loads the page once its capture has started.
-  // Null when `web_contents` shows nothing a capture could hold.
+  // A tab showing a page that is not on the web -- a new tab page, say -- is
+  // replaced all the same, so that whatever is browsed to from it starts
+  // empty too.
   static std::unique_ptr<content::WebContents> StartInEmptyState(
       content::WebContents* web_contents);
 
@@ -77,6 +74,9 @@ class WarcTabCapture : public content::WebContentsObserver,
   friend class content::WebContentsUserData<WarcTabCapture>;
 
   explicit WarcTabCapture(content::WebContents* web_contents);
+
+  // Starts archiving `web_contents`, a tab made by StartInEmptyState().
+  static void Start(content::WebContents* web_contents);
 
   // Hands the opened files to the network service. Static so that a tab that
   // stopped archiving, or closed, while they were opening still gets them
@@ -103,8 +103,8 @@ class WarcTabCapture : public content::WebContentsObserver,
 
   bool finished_ = false;
 
-  // For a tab made by StartInEmptyState(): the page it is to load, which it
-  // does not until its requests will be recorded.
+  // The page the tab is to load, which it does not until its requests will be
+  // recorded. Empty for a tab that had nothing to show.
   std::optional<GURL> initial_url_;
 
   base::WeakPtrFactory<WarcTabCapture> weak_factory_{this};
