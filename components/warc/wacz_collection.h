@@ -44,6 +44,35 @@ struct ArchivedResponse {
   std::string timestamp;
 };
 
+// What a page asked for: as much of the request as decides which capture
+// answers it.
+struct ReplayRequest {
+  ReplayRequest();
+  ReplayRequest(const ReplayRequest&);
+  ReplayRequest& operator=(const ReplayRequest&);
+  ReplayRequest(ReplayRequest&&);
+  ReplayRequest& operator=(ReplayRequest&&);
+  ~ReplayRequest();
+
+  GURL url;
+  std::string method = "GET";
+
+  // What a POST or PUT sent, and what it said it was. Null when the body is
+  // not known here (see RequestKey()).
+  std::string content_type;
+  std::optional<std::string> body;
+
+  // Whether a capture of the same resource asked for in other words may
+  // answer when there is none of it (see FindClosestCapture()).
+  //
+  // Not for a page: a visit to a page the archive does not hold should land
+  // on one saying so, not on whichever page lay nearest. What a page fetches
+  // as it loads is another matter. Asked for the moment it was captured, it
+  // would have had the answer stored; it misses only because its request
+  // carries something new each time.
+  bool accept_closest = false;
+};
+
 // The 14 digits an index keys a capture time by, from either that or the
 // RFC 3339 a page list writes ("2026-09-10T20:13:54Z"). The two halves of a
 // WACZ spell a time differently, so anything replaying a page from the page
@@ -104,6 +133,14 @@ class WaczCollection {
   std::optional<ArchivedResponse> Lookup(const GURL& url,
                                          std::string_view timestamp);
 
+  // As above, for a request by any method. A request other than a GET is
+  // found by what it sent as well as its URL (see RequestKey()). A HEAD the
+  // capture never made is answered by a GET of the same URL, whose headers
+  // are what the HEAD would have been told; leaving out the body is for the
+  // caller.
+  std::optional<ArchivedResponse> Lookup(const ReplayRequest& request,
+                                         std::string_view timestamp);
+
   // The pages the capture visited. Replay has to start somewhere, and this is
   // the only record of which URLs were pages rather than the images and
   // scripts that hung off them.
@@ -127,6 +164,9 @@ class WaczCollection {
 
  private:
   WaczCollection();
+
+  // The response `entry` points at, read out of its archive.
+  std::optional<ArchivedResponse> Read(const CdxjEntry& entry);
 
   std::optional<WaczReader> reader_;
   std::vector<CdxjEntry> index_;

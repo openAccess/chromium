@@ -5,6 +5,7 @@
 #include "components/warc/cdxj.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "testing/gtest/include/gtest/gtest.h"
@@ -134,6 +135,74 @@ TEST(CdxjTest, AKeyThatIsNotThereFindsNothing) {
   EXPECT_FALSE(FindNearestCapture(entries, "org,example)/missing",
                                   "20260101000000"));
   EXPECT_FALSE(FindNearestCapture({}, "org,example)/a", "20260101000000"));
+}
+
+const CdxjEntry* Closest(const std::vector<CdxjEntry>& entries,
+                         std::string_view key,
+                         std::string_view timestamp = "20260101000000") {
+  return FindClosestCapture(entries, key, timestamp,
+                            [](const CdxjEntry&) { return true; });
+}
+
+// A config fetched with a new cache-buster every load. The buster matches no
+// capture, so what is left to choose by is the rest of the query.
+TEST(CdxjTest, TheClosestCaptureAgreesWithTheRestOfTheQuery) {
+  const std::vector<CdxjEntry> entries = Captures({
+      {"org,example)/config.js?cb=111&env=prod", "20260101000000"},
+      {"org,example)/config.js?cb=222&env=staging", "20260101000000"},
+  });
+  const CdxjEntry* found =
+      Closest(entries, "org,example)/config.js?cb=999&env=prod");
+  ASSERT_TRUE(found);
+  EXPECT_EQ("org,example)/config.js?cb=111&env=prod", found->key);
+}
+
+TEST(CdxjTest, AmongEquallyCloseCapturesTheNearestInTimeAnswers) {
+  const std::vector<CdxjEntry> entries = Captures({
+      {"org,example)/feed?t=1", "20260101000000"},
+      {"org,example)/feed?t=2", "20260601000000"},
+  });
+  const CdxjEntry* found =
+      Closest(entries, "org,example)/feed?t=3", "20260501000000");
+  ASSERT_TRUE(found);
+  EXPECT_EQ("20260601000000", found->timestamp);
+}
+
+// What a POST was told is no answer to a GET, however alike the two look.
+TEST(CdxjTest, TheClosestCaptureWasMadeByTheSameMethod) {
+  const std::vector<CdxjEntry> entries = Captures({
+      {"org,example)/api?__wb_method=post&q=a", "20260101000000"},
+  });
+  EXPECT_FALSE(Closest(entries, "org,example)/api?q=a"));
+  EXPECT_FALSE(Closest(entries, "org,example)/api?__wb_method=put&q=a"));
+
+  const CdxjEntry* found =
+      Closest(entries, "org,example)/api?__wb_method=post&q=b");
+  ASSERT_TRUE(found);
+  EXPECT_EQ("org,example)/api?__wb_method=post&q=a", found->key);
+}
+
+// "/a-b" sorts between "/a" and "/a?...", and "/ab" after them all; neither
+// is "/a".
+TEST(CdxjTest, TheClosestCaptureIsOfTheSamePath) {
+  const std::vector<CdxjEntry> entries = Captures({
+      {"org,example)/a", "20260101000000"},
+      {"org,example)/a-b?x=2", "20260101000000"},
+      {"org,example)/a?x=1", "20260101000000"},
+      {"org,example)/ab", "20260101000000"},
+  });
+
+  const CdxjEntry* found = Closest(entries, "org,example)/a?x=2");
+  ASSERT_TRUE(found);
+  EXPECT_EQ("org,example)/a?x=1", found->key);
+
+  // Asked with a query, a capture made without one still counts.
+  found = Closest(entries, "org,example)/ab?x=2");
+  ASSERT_TRUE(found);
+  EXPECT_EQ("org,example)/ab", found->key);
+
+  EXPECT_FALSE(Closest(entries, "org,example)/b?x=1"));
+  EXPECT_FALSE(Closest(entries, "org,example)/a-?x=2"));
 }
 
 }  // namespace

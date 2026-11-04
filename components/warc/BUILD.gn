@@ -38,6 +38,8 @@ static_library("warc") {
 # library so that capturing does not drag in what only replay needs.
 static_library("replay") {
   sources = [
+    "request_key.cc",
+    "request_key.h",
     "wacz_collection.cc",
     "wacz_collection.h",
     "wacz_url_loader_factory.cc",
@@ -78,6 +80,7 @@ source_set("unit_tests") {
     "cdxj_unittest.cc",
     "gzip_member_reader_unittest.cc",
     "gzip_member_writer_unittest.cc",
+    "request_key_unittest.cc",
     "surt_unittest.cc",
     "wacz_collection_unittest.cc",
     "wacz_reader_unittest.cc",

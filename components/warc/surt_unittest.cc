@@ -56,8 +56,8 @@ TEST(SurtTest, MatchesTheReferenceImplementation) {
       {"http://example.org/a/b//", "org,example)/a/b"},
       {"http://example.org//", "org,example)/"},
 
-      // Queries: sorted whole and lowercased, so that two orderings of one
-      // request are one key. An empty query is no query.
+      // Queries: sorted and lowercased, so that two orderings of one request
+      // are one key. An empty query is no query.
       {"http://example.org/a/b?b=2&a=1", "org,example)/a/b?a=1&b=2"},
       {"http://example.org/p?Q=Value&B=2", "org,example)/p?b=2&q=value"},
       {"http://example.org/x?b=2&b=1&a=3", "org,example)/x?a=3&b=1&b=2"},
@@ -65,6 +65,24 @@ TEST(SurtTest, MatchesTheReferenceImplementation) {
       {"http://example.org/p?", "org,example)/p"},
       {"http://example.org/p?a=", "org,example)/p?a="},
       {"http://example.org?q=1", "org,example)/?q=1"},
+
+      // Sorted by name before value, as the reference sorts them, which is
+      // not the order of the whole terms: a "2", "." or "-" sorts before the
+      // "=" that ends a shorter name.
+      {"http://example.org/p?page2=x&page=1", "org,example)/p?page=1&page2=x"},
+      {"http://example.org/p?a.b=1&a=2", "org,example)/p?a=2&a.b=1"},
+      {"http://example.org/p?x-y=1&x=2&x=1", "org,example)/p?x=1&x=2&x-y=1"},
+      {"http://example.org/p?foo=&foo&fo=1", "org,example)/p?fo=1&foo&foo="},
+
+      // An empty term is a term, and sorts first.
+      {"http://example.org/p?nwid=3525&gdpr=0&",
+       "org,example)/p?&gdpr=0&nwid=3525"},
+      {"http://example.org/p?a=1&&b=2", "org,example)/p?&a=1&b=2"},
+      {"http://example.org/p?&", "org,example)/p?&"},
+
+      // And so are the spaces at either end of one.
+      {"http://example.org/p?q=news%20&%20views&x=1",
+       "org,example)/p?%20views&q=news%20&x=1"},
 
       // Escapes that stand for an ordinary character are not a second way of
       // writing it.

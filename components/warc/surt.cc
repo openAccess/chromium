@@ -103,20 +103,42 @@ std::string ReverseHost(std::string_view host) {
   return base::JoinString(labels, ",");
 }
 
-// Sorted whole, not by name: two requests differing only in the order of their
-// parameters are one request, and sorting "b=1&b=2" by the whole term keeps
-// repeated names in a settled order too.
+// Sorted, because two requests differing only in the order of their
+// parameters are one request. Sorted as the reference sorts them: by name,
+// then a name alone before the same name with a value, then by value. That
+// is not the order of the terms as strings -- "page" sorts before "page2"
+// here, where as strings "page2=x" sorts before "page=1" -- and a key that
+// orders them differently is a different key.
 //
 // Split after decoding rather than before, so that a parameter whose value
 // held an escaped "&" divides where the decoded URL divides.
+//
+// Every term is kept as it is, as the reference keeps it: an empty one, so
+// "a=1&" is keyed "&a=1", the empty term sorting first; and the spaces around
+// one, so "q=news%20" keeps its space. Pages leave both behind building a
+// query, and a key without them is a key no index holds.
 std::string NormalizeQuery(std::string_view query) {
   const std::string decoded = base::ToLowerASCII(DecodeEscapes(query));
   std::vector<std::string> terms = base::SplitString(
-      decoded, "&", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+      decoded, "&", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
   for (std::string& term : terms) {
     term = EscapeForKey(term);
   }
-  std::sort(terms.begin(), terms.end());
+  std::sort(terms.begin(), terms.end(),
+            [](std::string_view a, std::string_view b) {
+              const size_t a_equals = a.find('=');
+              const size_t b_equals = b.find('=');
+              const std::string_view a_name = a.substr(0, a_equals);
+              const std::string_view b_name = b.substr(0, b_equals);
+              if (a_name != b_name) {
+                return a_name < b_name;
+              }
+              if ((a_equals == std::string_view::npos) !=
+                  (b_equals == std::string_view::npos)) {
+                return a_equals == std::string_view::npos;
+              }
+              return a < b;
+            });
   return base::JoinString(terms, "&");
 }
 

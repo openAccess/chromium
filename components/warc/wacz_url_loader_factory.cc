@@ -31,8 +31,11 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
+#include "services/network/public/cpp/data_element.h"
 #include "services/network/public/cpp/http_request_headers_update_params.h"
+#include "services/network/public/cpp/request_destination.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
@@ -45,6 +48,34 @@ namespace {
 // Enough for a page or a script in one go; a larger body is written in pieces
 // as the renderer consumes it.
 constexpr uint32_t kDataPipeCapacity = 64 * 1024;
+
+// What decides which capture answers `request`.
+ReplayRequest ToReplayRequest(const network::ResourceRequest& request) {
+  ReplayRequest replay;
+  replay.url = request.url;
+  replay.method = request.method;
+  replay.content_type =
+      request.headers.GetHeader(net::HttpRequestHeaders::kContentType)
+          .value_or(std::string());
+  // The body as sent, if it was sent as bytes. One built from a file or a
+  // blob is not known here, and is left out of the lookup rather than read.
+  replay.body.emplace();
+  if (request.request_body) {
+    for (const network::DataElement& element :
+         *request.request_body->elements()) {
+      if (element.type() != network::DataElement::Tag::kBytes) {
+        replay.body.reset();
+        break;
+      }
+      replay.body->append(
+          element.As<network::DataElementBytes>().AsStringView());
+    }
+  }
+  replay.accept_closest =
+      request.destination != network::mojom::RequestDestination::kDocument &&
+      !network::IsRequestDestinationEmbeddedFrame(request.destination);
+  return replay;
+}
 
 // What a navigation to something the archive does not hold arrives at.
 //
@@ -176,11 +207,17 @@ class WaczUrlLoader : public network::mojom::URLLoader {
   // Remembers that only part of the resource was asked for.
   void set_range(std::optional<net::HttpByteRange> range) { range_ = range; }
 
+  // Remembers that the request was a HEAD, which is told the headers alone.
+  void set_headers_only() { headers_only_ = true; }
+
   // What the archive had to say.
   void Serve(std::optional<ArchivedResponse> response) {
     if (response && range_) {
       response = AnswerRange(std::move(*response), *range_);
       range_.reset();
+    }
+    if (response && headers_only_) {
+      response->body.clear();
     }
     if (!response) {
       // Nothing else to offer, and nowhere else to look. Saying so is the
@@ -278,6 +315,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
 
   std::optional<GURL> missing_page_for_;
   std::optional<net::HttpByteRange> range_;
+  bool headers_only_ = false;
   std::string body_;
   size_t body_size_ = 0;
   std::unique_ptr<mojo::DataPipeProducer> producer_;
@@ -299,12 +337,12 @@ WaczArchiveSource::WaczArchiveSource(base::FilePath path)
 WaczArchiveSource::~WaczArchiveSource() = default;
 
 std::optional<ArchivedResponse> WaczArchiveSource::Lookup(
-    GURL url,
+    ReplayRequest request,
     std::string timestamp) {
   if (!collection_) {
     return std::nullopt;
   }
-  return collection_->Lookup(url, timestamp);
+  return collection_->Lookup(request, timestamp);
 }
 
 // static
@@ -383,19 +421,14 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
     url_loader->set_missing_page(request.url);
   }
 
-  // Only what an archive can answer. A capture records what the browser was
-  // given in reply to a request it made; there is no reply stored for a
-  // request nobody made.
-  if (request.method != net::HttpRequestHeaders::kGetMethod) {
-    url_loader->Serve(std::nullopt);
-    return;
-  }
-
   url_loader->set_range(RequestedRange(request));
+  if (request.method == net::HttpRequestHeaders::kHeadMethod) {
+    url_loader->set_headers_only();
+  }
 
   archive_->source()
       .AsyncCall(&WaczArchiveSource::Lookup)
-      .WithArgs(request.url, timestamp_)
+      .WithArgs(ToReplayRequest(request), timestamp_)
       .Then(base::BindOnce(&WaczUrlLoader::Serve, url_loader->AsWeakPtr()));
 }
 

@@ -20,6 +20,7 @@
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "components/warc/gzip_member_writer.h"
+#include "components/warc/request_key.h"
 #include "components/warc/surt.h"
 #include "components/warc/warc_record.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -28,6 +29,7 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/test/test_url_loader_client.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/zlib/google/zip.h"
@@ -60,6 +62,17 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
                    std::string_view head,
                    std::string_view body,
                    std::string_view timestamp = kTimestamp) {
+    AddResponseUnder(ToSurt(GURL(std::string(url))), url, head, body,
+                     timestamp);
+  }
+
+  // As AddResponse(), filed in the index under `key` -- which is how a
+  // request other than a GET is filed, by what it sent as well as its URL.
+  void AddResponseUnder(std::string_view key,
+                        std::string_view url,
+                        std::string_view head,
+                        std::string_view body,
+                        std::string_view timestamp = kTimestamp) {
     RecordHeader header;
     header.type = RecordType::kResponse;
     header.target_uri = std::string(url);
@@ -70,8 +83,8 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
         SerializeRecord(header, block, head.size(), DigestAlgorithm::kSha1));
 
     index_ += base::StrCat(
-        {ToSurt(GURL(std::string(url))), " ", timestamp, " {\"url\": \"", url,
-         "\", \"status\": \"", head.substr(9, 3), "\", \"length\": \"",
+        {key, " ", timestamp, " {\"url\": \"", url, "\", \"status\": \"",
+         head.substr(9, 3), "\", \"length\": \"",
          base::NumberToString(member.size()), "\", \"offset\": \"",
          base::NumberToString(archive_.size()),
          "\", \"filename\": \"t.warc.gz\"}\n"});
@@ -113,7 +126,12 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
     if (!range.empty()) {
       request.headers.SetHeader(net::HttpRequestHeaders::kRange, range);
     }
+    Start(factory, request, client);
+  }
 
+  void Start(mojo::Remote<network::mojom::URLLoaderFactory>& factory,
+             const network::ResourceRequest& request,
+             network::TestURLLoaderClient* client) {
     factory->CreateLoaderAndStart(
         loader_.InitWithNewPipeAndPassReceiver(), /*request_id=*/1,
         /*options=*/0, request, client->CreateRemote(),
@@ -130,6 +148,17 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
                         network::TestURLLoaderClient* client,
                         std::string_view range = "") {
     Start(factory, url, client, "GET", range);
+    return ReadBody(client);
+  }
+
+  std::string FetchBody(mojo::Remote<network::mojom::URLLoaderFactory>& factory,
+                        const network::ResourceRequest& request,
+                        network::TestURLLoaderClient* client) {
+    Start(factory, request, client);
+    return ReadBody(client);
+  }
+
+  std::string ReadBody(network::TestURLLoaderClient* client) {
     client->RunUntilResponseReceived();
     if (!client->response_body().is_valid()) {
       client->RunUntilComplete();
@@ -254,6 +283,93 @@ TEST_F(WaczUrlLoaderFactoryTest, OnlyWhatACaptureCouldHaveStored) {
   network::TestURLLoaderClient client;
   FetchExpectingFailure(factory, "https://example.org/p", &client, "POST");
   EXPECT_EQ(net::ERR_FILE_NOT_FOUND, client.completion_status().error_code);
+}
+
+// A GraphQL API takes every query at one URL, and is told them apart by what
+// each one sent.
+TEST_F(WaczUrlLoaderFactoryTest, APostIsAnsweredByWhatItSent) {
+  const GURL api("https://example.org/graphql");
+  AddResponseUnder(
+      RequestKey(api, "POST", "application/json", R"({"query":"a"})"),
+      api.spec(), "HTTP/1.1 200 OK\r\n\r\n", "answer to a");
+  AddResponseUnder(
+      RequestKey(api, "POST", "application/json", R"({"query":"b"})"),
+      api.spec(), "HTTP/1.1 200 OK\r\n\r\n", "answer to b");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::ResourceRequest request;
+  request.url = api;
+  request.method = "POST";
+  request.headers.SetHeader(net::HttpRequestHeaders::kContentType,
+                            "application/json");
+  request.request_body = network::ResourceRequestBody::CreateFromCopyOfBytes(
+      base::as_byte_span(std::string_view(R"({"query":"b"})")));
+
+  network::TestURLLoaderClient client;
+  EXPECT_EQ("answer to b", FetchBody(factory, request, &client));
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+}
+
+// Pages ask for a HEAD to see whether something is there, and a capture
+// seldom holds one. The GET's headers are what the HEAD would have been told.
+TEST_F(WaczUrlLoaderFactoryTest, AHeadIsAnsweredWithTheHeadersOfAGet) {
+  AddResponse("https://example.org/ads.js",
+              "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\n\r\n",
+              "var ads = 1;");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::ResourceRequest request;
+  request.url = GURL("https://example.org/ads.js");
+  request.method = "HEAD";
+  network::TestURLLoaderClient client;
+  EXPECT_EQ("", FetchBody(factory, request, &client));
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+  ASSERT_TRUE(client.response_head());
+  EXPECT_EQ(200, client.response_head()->headers->response_code());
+  EXPECT_EQ("text/javascript", client.response_head()->mime_type);
+}
+
+// A script fetching its data with a new cache-buster each time gets the data
+// the capture fetched with the old one.
+TEST_F(WaczUrlLoaderFactoryTest, ASubresourceIsAnsweredByTheClosestCapture) {
+  AddResponse("https://example.org/data.json?cb=111&v=2",
+              "HTTP/1.1 200 OK\r\n\r\n", "data");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  EXPECT_EQ(
+      "data",
+      FetchBody(factory, "https://example.org/data.json?cb=999&v=2", &client));
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+}
+
+// A visit to a page the archive lacks says so, rather than landing on
+// whichever page lies nearest. So does a frame, in the way a frame can.
+TEST_F(WaczUrlLoaderFactoryTest, APageIsNotAnsweredByAnother) {
+  AddResponse("https://example.org/article?id=1",
+              "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n",
+              "<html>one</html>");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::ResourceRequest request;
+  request.url = GURL("https://example.org/article?id=2");
+  request.method = "GET";
+  request.destination = network::mojom::RequestDestination::kDocument;
+  {
+    network::TestURLLoaderClient client;
+    const std::string body = FetchBody(factory, request, &client);
+    ASSERT_TRUE(client.response_head());
+    EXPECT_EQ(404, client.response_head()->headers->response_code());
+    EXPECT_NE(std::string::npos, body.find("Not in this archive"));
+  }
+
+  request.destination = network::mojom::RequestDestination::kIframe;
+  {
+    network::TestURLLoaderClient client;
+    Start(factory, request, &client);
+    client.RunUntilComplete();
+    EXPECT_EQ(net::ERR_FILE_NOT_FOUND, client.completion_status().error_code);
+  }
 }
 
 TEST_F(WaczUrlLoaderFactoryTest, AnArchivedRedirectIsServedAsARedirect) {

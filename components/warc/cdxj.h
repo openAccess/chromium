@@ -89,6 +89,32 @@ const CdxjEntry* FindNearestCapture(
     std::string_view timestamp,
     base::FunctionRef<bool(const CdxjEntry&)> accept);
 
+// Returns the capture that best stands in for `key` when there is none of it:
+// a capture of the same URL path by the same method, whose query agrees with
+// `key`'s most, and the nearest `timestamp` of those that agree as well. Null
+// if the path was never captured by that method.
+//
+// A page asks again for much of what it asked for when it was captured, but
+// not in quite the same words. A cache-buster, a time, an id made for the
+// visit -- each load puts a new one in the query, so the request replay makes
+// was never made before and an exact lookup finds nothing. The resource is
+// there, filed under the query the capture used.
+//
+// Agreeing counts each parameter. One with the same value scores most, one
+// with another value a little, since the two requests at least meant the
+// same thing by it, and one on only one side counts against. Nothing is
+// treated as a cache-buster by name: the parameters that differ between
+// every capture weigh the same in all of them, and the ones that decide which
+// resource was meant decide it.
+//
+// The method is part of the path for this. A GET is never answered with what
+// a POST was told.
+const CdxjEntry* FindClosestCapture(
+    base::span<const CdxjEntry> entries,
+    std::string_view key,
+    std::string_view timestamp,
+    base::FunctionRef<bool(const CdxjEntry&)> accept);
+
 }  // namespace warc
 
 #endif  // COMPONENTS_WARC_CDXJ_H_

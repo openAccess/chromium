@@ -5,9 +5,12 @@
 #include "components/warc/cdxj.h"
 
 #include <algorithm>
+#include <set>
 #include <utility>
+#include <vector>
 
 #include "base/json/json_reader.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -56,6 +59,52 @@ base::Time ParseIndexTimestamp(std::string_view timestamp) {
     return base::Time();
   }
   return parsed;
+}
+
+// The query of a key, as the terms a closest capture is judged by. The method
+// is not one of them: it decides which captures are in the running at all.
+struct KeyQuery {
+  std::string_view method;
+  std::set<std::string_view> terms;
+  std::set<std::string_view> names;
+};
+
+constexpr std::string_view kMethodName = "__wb_method";
+
+KeyQuery ParseKeyQuery(std::string_view query) {
+  KeyQuery parsed;
+  for (std::string_view term : base::SplitStringPiece(
+           query, "&", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    const std::string_view name = term.substr(0, term.find('='));
+    if (name == kMethodName) {
+      parsed.method = term.substr(std::min(term.size(), name.size() + 1));
+      continue;
+    }
+    parsed.terms.insert(term);
+    parsed.names.insert(name);
+  }
+  return parsed;
+}
+
+// How well `candidate` stands in for `wanted`. See FindClosestCapture().
+int Agreement(const KeyQuery& wanted, const KeyQuery& candidate) {
+  int score = 0;
+  for (std::string_view term : wanted.terms) {
+    const std::string_view name = term.substr(0, term.find('='));
+    if (candidate.terms.contains(term)) {
+      score += 2;
+    } else if (candidate.names.contains(name)) {
+      score += 1;
+    } else {
+      score -= 1;
+    }
+  }
+  for (std::string_view name : candidate.names) {
+    if (!wanted.names.contains(name)) {
+      score -= 1;
+    }
+  }
+  return score;
 }
 
 }  // namespace
@@ -160,6 +209,60 @@ const CdxjEntry* FindNearestCapture(
     }
   }
   return nearest;
+}
+
+const CdxjEntry* FindClosestCapture(
+    base::span<const CdxjEntry> entries,
+    std::string_view key,
+    std::string_view timestamp,
+    base::FunctionRef<bool(const CdxjEntry&)> accept) {
+  // A key's path ends at its first "?". Its captures are those keyed by the
+  // path alone and those keyed by the path and a query, which sort together
+  // after it -- though not straight after: "/a-b" sorts between "/a" and
+  // "/a?", so the two are found apart.
+  const size_t query_start = key.find('?');
+  const std::string_view path = key.substr(0, query_start);
+  const KeyQuery wanted = ParseKeyQuery(query_start == std::string_view::npos
+                                            ? std::string_view()
+                                            : key.substr(query_start + 1));
+  const std::string with_query = base::StrCat({path, "?"});
+
+  const base::Time target = ParseIndexTimestamp(timestamp);
+  const CdxjEntry* closest = nullptr;
+  int closest_score = 0;
+  base::TimeDelta closest_distance;
+  auto consider = [&](const CdxjEntry& entry, std::string_view query) {
+    if (!accept(entry)) {
+      return;
+    }
+    const KeyQuery candidate = ParseKeyQuery(query);
+    if (candidate.method != wanted.method) {
+      return;
+    }
+    const int score = Agreement(wanted, candidate);
+    const base::TimeDelta distance =
+        (ParseIndexTimestamp(entry.timestamp) - target).magnitude();
+    if (!closest || score > closest_score ||
+        (score == closest_score && distance < closest_distance)) {
+      closest = &entry;
+      closest_score = score;
+      closest_distance = distance;
+    }
+  };
+
+  const auto by_key = [](const CdxjEntry& entry, std::string_view k) {
+    return entry.key < k;
+  };
+  for (auto it = std::lower_bound(entries.begin(), entries.end(), path, by_key);
+       it != entries.end() && it->key == path; ++it) {
+    consider(*it, std::string_view());
+  }
+  for (auto it = std::lower_bound(entries.begin(), entries.end(),
+                                  std::string_view(with_query), by_key);
+       it != entries.end() && it->key.starts_with(with_query); ++it) {
+    consider(*it, std::string_view(it->key).substr(with_query.size()));
+  }
+  return closest;
 }
 
 }  // namespace warc

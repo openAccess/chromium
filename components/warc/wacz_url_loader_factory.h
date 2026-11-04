@@ -50,10 +50,11 @@ class WaczArchiveSource {
 
   ~WaczArchiveSource();
 
-  // The response stored for `url` at `timestamp`, or nullopt -- which is also
-  // the answer when the container could not be read at all, since there is
-  // nothing a caller could do differently about the two.
-  std::optional<ArchivedResponse> Lookup(GURL url, std::string timestamp);
+  // The response stored for `request` at `timestamp`, or nullopt -- which is
+  // also the answer when the container could not be read at all, since there
+  // is nothing a caller could do differently about the two.
+  std::optional<ArchivedResponse> Lookup(ReplayRequest request,
+                                         std::string timestamp);
 
  private:
   std::optional<WaczCollection> collection_;

@@ -16,6 +16,7 @@
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "components/warc/gzip_member_reader.h"
+#include "components/warc/request_key.h"
 #include "components/warc/surt.h"
 #include "components/warc/warc_record_parser.h"
 #include "net/http/http_response_headers.h"
@@ -306,6 +307,13 @@ ArchivedResponse::ArchivedResponse(ArchivedResponse&&) = default;
 ArchivedResponse& ArchivedResponse::operator=(ArchivedResponse&&) = default;
 ArchivedResponse::~ArchivedResponse() = default;
 
+ReplayRequest::ReplayRequest() = default;
+ReplayRequest::ReplayRequest(const ReplayRequest&) = default;
+ReplayRequest& ReplayRequest::operator=(const ReplayRequest&) = default;
+ReplayRequest::ReplayRequest(ReplayRequest&&) = default;
+ReplayRequest& ReplayRequest::operator=(ReplayRequest&&) = default;
+ReplayRequest::~ReplayRequest() = default;
+
 std::vector<PageEntry> ReadPageList(base::File file) {
   std::optional<WaczReader> reader = WaczReader::Open(std::move(file));
   if (!reader) {
@@ -384,10 +392,26 @@ std::string WaczCollection::LandingMoment(const GURL& url) const {
 std::optional<ArchivedResponse> WaczCollection::Lookup(
     const GURL& url,
     std::string_view timestamp) {
-  const std::string key = ToSurt(url);
-  if (key.empty()) {
+  ReplayRequest request;
+  request.url = url;
+  return Lookup(request, timestamp);
+}
+
+std::optional<ArchivedResponse> WaczCollection::Lookup(
+    const ReplayRequest& request,
+    std::string_view timestamp) {
+  // The keys the request may be filed under, in the order they are wanted.
+  std::vector<std::string> keys;
+  keys.push_back(RequestKey(request.url, request.method, request.content_type,
+                            request.body));
+  if (request.method == "HEAD") {
+    keys.push_back(ToSurt(request.url));
+  }
+  std::erase(keys, std::string());
+  if (keys.empty()) {
     return std::nullopt;
   }
+
   // A capture of the whole resource, if there is one, over a nearer capture
   // of part of it. A media player asks for ranges, and the archive holds the
   // partial responses it was given beside a complete copy fetched to go with
@@ -395,26 +419,45 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
   // The whole can answer any request for the resource, ranged or not; a part
   // answers only the request that was made for it.
   const std::string moment = ToIndexTimestamp(timestamp);
-  const CdxjEntry* entry = FindNearestCapture(
-      index_, key, moment,
-      [](const CdxjEntry& capture) { return capture.status != "206"; });
-  if (!entry) {
-    entry = FindNearestCapture(index_, key, moment);
+  const auto whole = [](const CdxjEntry& capture) {
+    return capture.status != "206";
+  };
+  const auto any = [](const CdxjEntry&) { return true; };
+  for (const std::string& key : keys) {
+    for (const CdxjEntry* entry :
+         {FindNearestCapture(index_, key, moment, whole),
+          FindNearestCapture(index_, key, moment, any)}) {
+      if (entry) {
+        return Read(*entry);
+      }
+    }
   }
-  if (!entry) {
-    return std::nullopt;
+  // Only once nothing was filed under the request's own words.
+  if (request.accept_closest) {
+    for (const std::string& key : keys) {
+      for (const CdxjEntry* entry :
+           {FindClosestCapture(index_, key, moment, whole),
+            FindClosestCapture(index_, key, moment, any)}) {
+        if (entry) {
+          return Read(*entry);
+        }
+      }
+    }
   }
+  return std::nullopt;
+}
 
-  const auto archive = archives_.find(entry->filename);
+std::optional<ArchivedResponse> WaczCollection::Read(const CdxjEntry& entry) {
+  const auto archive = archives_.find(entry.filename);
   if (archive == archives_.end()) {
     // The index points into an archive the container does not hold, which can
     // happen where a container was assembled from a larger capture.
-    LOG(ERROR) << "WACZ index names a missing archive: " << entry->filename;
+    LOG(ERROR) << "WACZ index names a missing archive: " << entry.filename;
     return std::nullopt;
   }
 
   std::optional<std::vector<uint8_t>> stored =
-      reader_->ReadAt(*archive->second, entry->offset, entry->length);
+      reader_->ReadAt(*archive->second, entry.offset, entry.length);
   if (!stored) {
     return std::nullopt;
   }
@@ -440,7 +483,7 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
 
   std::optional<ArchivedResponse> response = ParseStoredResponse(record->block);
   if (response) {
-    response->timestamp = entry->timestamp;
+    response->timestamp = entry.timestamp;
   }
   return response;
 }
