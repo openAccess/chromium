@@ -45,6 +45,11 @@ class WarcPageRecorder : public content::WebContentsObserver,
   // capture.
   void SetCaptureDirectory(const base::FilePath& directory);
 
+  // Page lists are written on one sequence for the life of the process. A test
+  // gets a thread pool of its own, and the sequence made in an earlier test's
+  // runs nothing; this has the next write make a new one.
+  static void ResetFileSequenceForTesting();
+
  private:
   friend class content::WebContentsUserData<WarcPageRecorder>;
 
@@ -54,6 +59,7 @@ class WarcPageRecorder : public content::WebContentsObserver,
   void DidRedirectNavigation(content::NavigationHandle* handle) override;
   void DidFinishNavigation(content::NavigationHandle* handle) override;
   void DidStopLoading() override;
+  void TitleWasSet(content::NavigationEntry* entry) override;
   void WebContentsDestroyed() override;
 
   // Writes the page that was waiting for a title, if there is one.
@@ -67,10 +73,17 @@ class WarcPageRecorder : public content::WebContentsObserver,
   // A page that has committed but is not written yet. Its URL and time are
   // fixed at commit, and the time is when the page was requested, so a slow
   // page is dated as its records are rather than when it finished.
+  //
+  // Its title is its own navigation entry's, kept as the page sets it. The
+  // tab's title is not the page's: a tab whose page has none shows a URL
+  // instead, and by the time the next page replaces this one, that URL is
+  // the next page's.
   struct PendingPage {
     GURL url;
     base::Time at;
     std::string id;
+    int entry_id;
+    std::u16string title;
   };
   std::optional<PendingPage> pending_;
 

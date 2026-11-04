@@ -5092,6 +5092,7 @@ test("unit_tests") {
     "../browser/services_unittest.cc",
     "../browser/ui/url_identity_unittest.cc",
     "../browser/wacz_replay_unittest.cc",
+    "../browser/warc_page_recorder_unittest.cc",
     "../common/chrome_content_client_unittest.cc",
     "../common/chrome_paths_unittest.cc",
     "../common/crash_keys_unittest.cc",

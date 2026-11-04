@@ -21,6 +21,7 @@
 #include "base/task/thread_pool.h"
 #include "base/uuid.h"
 #include "base/values.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_handle_timing.h"
 #include "content/public/browser/network_service_instance.h"
@@ -100,11 +101,19 @@ PagesFile& GetPagesFile(const base::FilePath& capture_directory) {
       .first->second;
 }
 
-scoped_refptr<base::SequencedTaskRunner> GetFileTaskRunner() {
-  static base::NoDestructor<scoped_refptr<base::SequencedTaskRunner>> runner(
-      base::ThreadPool::CreateSequencedTaskRunner(
-          {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN}));
+// Made on first use, and only on the UI thread, where pages are written from.
+scoped_refptr<base::SequencedTaskRunner>& FileTaskRunner() {
+  static base::NoDestructor<scoped_refptr<base::SequencedTaskRunner>> runner;
   return *runner;
+}
+
+scoped_refptr<base::SequencedTaskRunner> GetFileTaskRunner() {
+  scoped_refptr<base::SequencedTaskRunner>& runner = FileTaskRunner();
+  if (!runner) {
+    runner = base::ThreadPool::CreateSequencedTaskRunner(
+        {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
+  }
+  return runner;
 }
 
 // RFC 3339 in UTC, which is how WACZ dates a page.
@@ -146,6 +155,11 @@ WarcPageRecorder::WarcPageRecorder(content::WebContents* web_contents)
       content::WebContentsUserData<WarcPageRecorder>(*web_contents) {}
 
 WarcPageRecorder::~WarcPageRecorder() = default;
+
+// static
+void WarcPageRecorder::ResetFileSequenceForTesting() {
+  FileTaskRunner() = nullptr;
+}
 
 // static
 void WarcPageRecorder::MaybeCreateForWebContents(
@@ -196,9 +210,14 @@ void WarcPageRecorder::DidFinishNavigation(content::NavigationHandle* handle) {
     return;
   }
 
+  content::NavigationEntry* entry = handle->GetNavigationEntry();
+  if (!entry) {
+    return;
+  }
   pending_ =
       PendingPage{handle->GetURL(), redirected_at.value_or(RequestTime(handle)),
-                  base::Uuid::GenerateRandomV4().AsLowercaseString()};
+                  base::Uuid::GenerateRandomV4().AsLowercaseString(),
+                  entry->GetUniqueID(), entry->GetTitle()};
 }
 
 void WarcPageRecorder::SetCaptureDirectory(const base::FilePath& directory) {
@@ -208,6 +227,12 @@ void WarcPageRecorder::SetCaptureDirectory(const base::FilePath& directory) {
 
 void WarcPageRecorder::DidStopLoading() {
   WritePendingPage();
+}
+
+void WarcPageRecorder::TitleWasSet(content::NavigationEntry* entry) {
+  if (pending_ && entry && entry->GetUniqueID() == pending_->entry_id) {
+    pending_->title = entry->GetTitle();
+  }
 }
 
 void WarcPageRecorder::WebContentsDestroyed() {
@@ -237,9 +262,9 @@ void WarcPageRecorder::WritePendingPage() {
   entry.Set("ts", FormatPageTime(page.at));
   // The title as it stands now. A page that renames itself later keeps the name
   // it had when it finished loading, which is the one it was archived under.
-  const std::string title = base::UTF16ToUTF8(web_contents()->GetTitle());
-  if (!title.empty()) {
-    entry.Set("title", title);
+  // A page with no title is listed without one, as WACZ allows.
+  if (!page.title.empty()) {
+    entry.Set("title", base::UTF16ToUTF8(page.title));
   }
 
   std::optional<std::string> json = base::WriteJson(entry);
