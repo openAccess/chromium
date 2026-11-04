@@ -31,6 +31,9 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
+#include "net/url_request/redirect_info.h"
+#include "net/url_request/redirect_util.h"
+#include "net/url_request/url_request.h"
 #include "services/network/public/cpp/data_element.h"
 #include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/request_destination.h"
@@ -40,6 +43,7 @@
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+#include "url/origin.h"
 
 namespace warc {
 
@@ -176,7 +180,7 @@ std::optional<ArchivedResponse> AnswerRange(ArchivedResponse stored,
   return stored;
 }
 
-// Serves one request, then deletes itself.
+// Serves one request, and the redirects it is sent on, then deletes itself.
 //
 // Owns itself for as long as its bindings live, as a loader does: the client
 // may give up at any point, and the archive read it is waiting on outlives
@@ -184,8 +188,15 @@ std::optional<ArchivedResponse> AnswerRange(ArchivedResponse stored,
 class WaczUrlLoader : public network::mojom::URLLoader {
  public:
   WaczUrlLoader(mojo::PendingReceiver<network::mojom::URLLoader> loader,
-                mojo::PendingRemote<network::mojom::URLLoaderClient> client)
-      : receiver_(this, std::move(loader)), client_(std::move(client)) {
+                mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+                scoped_refptr<WaczArchive> archive,
+                std::string timestamp,
+                const network::ResourceRequest& request)
+      : receiver_(this, std::move(loader)),
+        client_(std::move(client)),
+        archive_(std::move(archive)),
+        timestamp_(std::move(timestamp)),
+        request_(request) {
     receiver_.set_disconnect_handler(
         base::BindOnce(&WaczUrlLoader::DeleteSelf, base::Unretained(this)));
   }
@@ -195,53 +206,125 @@ class WaczUrlLoader : public network::mojom::URLLoader {
 
   ~WaczUrlLoader() override = default;
 
-  base::WeakPtr<WaczUrlLoader> AsWeakPtr() {
-    return weak_factory_.GetWeakPtr();
+  // Asks the archive for the request as it now stands: as it was made, or as
+  // a redirect has since sent it.
+  void Start() {
+    archive_->source()
+        .AsyncCall(&WaczArchiveSource::Lookup)
+        .WithArgs(ToReplayRequest(request_), timestamp_)
+        .Then(
+            base::BindOnce(&WaczUrlLoader::Serve, weak_factory_.GetWeakPtr()));
   }
 
-  // Remembers what to say if the archive has nothing.
-  void set_missing_page(std::optional<GURL> url) {
-    missing_page_for_ = std::move(url);
+  // network::mojom::URLLoader:
+  void FollowRedirect(
+      network::HttpRequestHeadersUpdateParams headers_update_params,
+      const std::optional<GURL>& new_url) override {
+    if (!redirect_) {
+      // Only a redirect can be followed, and none is waiting.
+      Fail(net::ERR_UNEXPECTED);
+      return;
+    }
+    // The client may only move the redirect within the origin it points to.
+    if (new_url &&
+        !url::Origin::Create(redirect_->new_url).IsSameOriginWith(*new_url)) {
+      Fail(net::ERR_UNSAFE_REDIRECT);
+      return;
+    }
+    // The request goes on as the network would send it on: under the method
+    // the redirect calls for, without a body it no longer has any use for,
+    // and with whatever headers the client has added or taken away.
+    bool should_clear_upload = false;
+    net::RedirectUtil::UpdateHttpRequest(
+        request_.url, request_.method, *redirect_,
+        headers_update_params.removed_headers,
+        headers_update_params.modified_headers, &request_.headers,
+        &should_clear_upload);
+    if (should_clear_upload) {
+      request_.request_body = nullptr;
+    }
+    request_.url = new_url.value_or(redirect_->new_url);
+    request_.method = redirect_->new_method;
+    request_.site_for_cookies = redirect_->new_site_for_cookies;
+    request_.referrer = GURL(redirect_->new_referrer);
+    request_.referrer_policy = redirect_->new_referrer_policy;
+    redirect_.reset();
+    // An archive holds what was fetched over the web, and nothing it points
+    // to anywhere else is in it -- as the network would not follow it there
+    // either.
+    if (!request_.url.SchemeIsHTTPOrHTTPS()) {
+      Fail(net::ERR_UNSAFE_REDIRECT);
+      return;
+    }
+    Start();
   }
+  void SetPriority(net::RequestPriority priority,
+                   int32_t intra_priority_value) override {}
 
-  // Remembers that only part of the resource was asked for.
-  void set_range(std::optional<net::HttpByteRange> range) { range_ = range; }
-
-  // Remembers that the request was a HEAD, which is told the headers alone.
-  void set_headers_only() { headers_only_ = true; }
-
+ private:
   // What the archive had to say.
   void Serve(std::optional<ArchivedResponse> response) {
-    if (response && range_) {
-      response = AnswerRange(std::move(*response), *range_);
-      range_.reset();
-    }
-    if (response && headers_only_) {
-      response->body.clear();
+    if (response) {
+      if (std::optional<net::HttpByteRange> range = RequestedRange(request_)) {
+        response = AnswerRange(std::move(*response), *range);
+      }
     }
     if (!response) {
       // Nothing else to offer, and nowhere else to look. Saying so is the
-      // point: a resource the archive lacks must be seen to be missing.
-      if (missing_page_for_) {
-        ServeMissingPage(*missing_page_for_);
+      // point: a resource the archive lacks must be seen to be missing. A
+      // document that is missing needs somewhere to say so; a subresource does
+      // not, and should simply be missing.
+      if (request_.destination ==
+          network::mojom::RequestDestination::kDocument) {
+        Respond(MissingPage(request_.url));
       } else {
         Fail(net::ERR_FILE_NOT_FOUND);
       }
       return;
     }
 
-    auto head = network::mojom::URLResponseHead::New();
-    head->headers = std::move(response->headers);
-    head->headers->GetMimeTypeAndCharset(&head->mime_type, &head->charset);
-    head->content_length = static_cast<int64_t>(response->body.size());
-    head->encoded_data_length = static_cast<int64_t>(response->body.size());
-    const base::TimeTicks now = base::TimeTicks::Now();
-    head->request_start = now;
-    head->response_start = now;
-    // The response was not fetched now, whatever the clock says, and a reader
-    // of an archive is entitled to know when it was.
-    head->request_time = base::Time::Now();
-    head->response_time = base::Time::Now();
+    // An archived redirect is handed over as one, as the server's was. The
+    // client decides whether to follow it, and if it does, wherever it points
+    // is asked of the archive in turn.
+    std::string location;
+    if (response->headers->IsRedirect(&location)) {
+      Redirect(std::move(*response), request_.url.Resolve(location));
+      return;
+    }
+    Respond(std::move(*response));
+  }
+
+  void Redirect(ArchivedResponse response, const GURL& location) {
+    if (!location.is_valid()) {
+      Fail(net::ERR_INVALID_REDIRECT);
+      return;
+    }
+    // Captures can point at each other in a circle that no server ever did --
+    // two redirects captured at different moments, or found as each other's
+    // nearest -- so a chain is cut off where the network would cut it.
+    if (redirects_left_-- == 0) {
+      Fail(net::ERR_TOO_MANY_REDIRECTS);
+      return;
+    }
+    redirect_ = net::RedirectInfo::ComputeRedirectInfo(
+        request_.method, request_.url, request_.site_for_cookies,
+        request_.update_first_party_url_on_redirect
+            ? net::RedirectInfo::FirstPartyURLPolicy::UPDATE_URL_ON_REDIRECT
+            : net::RedirectInfo::FirstPartyURLPolicy::NEVER_CHANGE_URL,
+        request_.referrer_policy, request_.referrer.spec(),
+        request_.request_initiator, response.headers->response_code(), location,
+        net::RedirectUtil::GetReferrerPolicyHeader(response.headers.get()),
+        /*insecure_scheme_was_upgraded=*/false);
+    // A redirect's body is never shown, so none is sent.
+    response.body.clear();
+    client_->OnReceiveRedirect(*redirect_, Head(std::move(response)));
+  }
+
+  void Respond(ArchivedResponse response) {
+    if (request_.method == net::HttpRequestHeaders::kHeadMethod) {
+      // A HEAD is told the headers alone.
+      response.body.clear();
+    }
 
     mojo::ScopedDataPipeProducerHandle producer;
     mojo::ScopedDataPipeConsumerHandle consumer;
@@ -251,13 +334,12 @@ class WaczUrlLoader : public network::mojom::URLLoader {
       return;
     }
 
-    body_size_ = response->body.size();
-    client_->OnReceiveResponse(std::move(head), std::move(consumer),
+    body_ = std::string(response.body.begin(), response.body.end());
+    client_->OnReceiveResponse(Head(std::move(response)), std::move(consumer),
                                std::nullopt);
 
     // The body is written after the head, and asynchronously, because a
     // response larger than the pipe cannot be handed over in one piece.
-    body_ = std::string(response->body.begin(), response->body.end());
     producer_ = std::make_unique<mojo::DataPipeProducer>(std::move(producer));
     producer_->Write(std::make_unique<mojo::StringDataSource>(
                          body_, mojo::StringDataSource::AsyncWritingMode::
@@ -266,20 +348,23 @@ class WaczUrlLoader : public network::mojom::URLLoader {
                                     weak_factory_.GetWeakPtr()));
   }
 
-  // network::mojom::URLLoader:
-  void FollowRedirect(
-      network::HttpRequestHeadersUpdateParams headers_update_params,
-      const std::optional<GURL>& new_url) override {
-    // An archived redirect is answered as the redirect it was, and the browser
-    // asks again for wherever it points -- which this factory serves too, out
-    // of the same archive. So there is nothing to follow here.
-    DeleteSelf();
+  static network::mojom::URLResponseHeadPtr Head(ArchivedResponse response) {
+    auto head = network::mojom::URLResponseHead::New();
+    head->headers = std::move(response.headers);
+    head->headers->GetMimeTypeAndCharset(&head->mime_type, &head->charset);
+    head->content_length = static_cast<int64_t>(response.body.size());
+    head->encoded_data_length = static_cast<int64_t>(response.body.size());
+    const base::TimeTicks now = base::TimeTicks::Now();
+    head->request_start = now;
+    head->response_start = now;
+    // The response was not fetched now, whatever the clock says, and a reader
+    // of an archive is entitled to know when it was.
+    head->request_time = base::Time::Now();
+    head->response_time = base::Time::Now();
+    return head;
   }
-  void SetPriority(net::RequestPriority priority,
-                   int32_t intra_priority_value) override {}
 
- private:
-  void ServeMissingPage(const GURL& url) {
+  static ArchivedResponse MissingPage(const GURL& url) {
     ArchivedResponse response;
     response.headers = base::MakeRefCounted<net::HttpResponseHeaders>(
         net::HttpUtil::AssembleRawHeaders(
@@ -287,8 +372,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
             "Content-Type: text/html; charset=utf-8\r\n\r\n"));
     const std::string body = MissingPageBody(url);
     response.body.assign(body.begin(), body.end());
-    missing_page_for_.reset();
-    Serve(std::move(response));
+    return response;
   }
 
   void OnBodyWritten(MojoResult result) {
@@ -297,8 +381,8 @@ class WaczUrlLoader : public network::mojom::URLLoader {
       return;
     }
     network::URLLoaderCompletionStatus status(net::OK);
-    status.encoded_data_length = base::ByteSize(body_size_);
-    status.decoded_body_length = base::ByteSize(body_size_);
+    status.encoded_data_length = base::ByteSize(body_.size());
+    status.decoded_body_length = base::ByteSize(body_.size());
     client_->OnComplete(status);
     DeleteSelf();
   }
@@ -313,11 +397,17 @@ class WaczUrlLoader : public network::mojom::URLLoader {
   mojo::Receiver<network::mojom::URLLoader> receiver_;
   mojo::Remote<network::mojom::URLLoaderClient> client_;
 
-  std::optional<GURL> missing_page_for_;
-  std::optional<net::HttpByteRange> range_;
-  bool headers_only_ = false;
+  const scoped_refptr<WaczArchive> archive_;
+  const std::string timestamp_;
+
+  // The request as it now stands, changed by each redirect followed.
+  network::ResourceRequest request_;
+
+  // The redirect handed to the client, until it is followed.
+  std::optional<net::RedirectInfo> redirect_;
+  int redirects_left_ = net::URLRequest::kMaxRedirects;
+
   std::string body_;
-  size_t body_size_ = 0;
   std::unique_ptr<mojo::DataPipeProducer> producer_;
 
   base::WeakPtrFactory<WaczUrlLoader> weak_factory_{this};
@@ -413,23 +503,10 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
     return;
   }
 
-  auto* url_loader = new WaczUrlLoader(std::move(loader), std::move(client));
-
-  // A document that is missing needs somewhere to say so; a subresource does
-  // not, and should simply be missing.
-  if (request.destination == network::mojom::RequestDestination::kDocument) {
-    url_loader->set_missing_page(request.url);
-  }
-
-  url_loader->set_range(RequestedRange(request));
-  if (request.method == net::HttpRequestHeaders::kHeadMethod) {
-    url_loader->set_headers_only();
-  }
-
-  archive_->source()
-      .AsyncCall(&WaczArchiveSource::Lookup)
-      .WithArgs(ToReplayRequest(request), timestamp_)
-      .Then(base::BindOnce(&WaczUrlLoader::Serve, url_loader->AsWeakPtr()));
+  // Deletes itself once it has answered, or once the client stops listening.
+  (new WaczUrlLoader(std::move(loader), std::move(client), archive_, timestamp_,
+                     request))
+      ->Start();
 }
 
 }  // namespace warc

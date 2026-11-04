@@ -28,6 +28,8 @@
 #include "net/base/net_errors.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
+#include "net/url_request/url_request.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/test/test_url_loader_client.h"
@@ -156,6 +158,16 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
                         network::TestURLLoaderClient* client) {
     Start(factory, request, client);
     return ReadBody(client);
+  }
+
+  // Follows the redirect `client` was handed, as a client that wants to go
+  // where it points does.
+  void Follow(network::TestURLLoaderClient* client) {
+    mojo::Remote<network::mojom::URLLoader> loader(std::move(loader_));
+    loader->FollowRedirect(network::HttpRequestHeadersUpdateParams(),
+                           std::nullopt);
+    loader_ = loader.Unbind();
+    client->ClearHasReceivedRedirect();
   }
 
   std::string ReadBody(network::TestURLLoaderClient* client) {
@@ -372,24 +384,113 @@ TEST_F(WaczUrlLoaderFactoryTest, APageIsNotAnsweredByAnother) {
   }
 }
 
-TEST_F(WaczUrlLoaderFactoryTest, AnArchivedRedirectIsServedAsARedirect) {
+// Handed over as the redirect it was, as the server handed it over, so that
+// the client can check it and follow it: where a frame or a script ends up is
+// its URL and its origin. Served as a response that merely said 301, it was
+// taken for the end of the request, and a frame given one failed to load.
+TEST_F(WaczUrlLoaderFactoryTest,
+       AnArchivedRedirectIsFollowedThroughTheArchive) {
   AddResponse("https://example.org/old",
               "HTTP/1.1 301 Moved Permanently\r\n"
-              "Location: https://example.org/new\r\n\r\n",
-              "");
+              "Location: /new\r\n\r\n",
+              "moved");
   AddResponse("https://example.org/new", "HTTP/1.1 200 OK\r\n\r\n", "arrived");
   mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
 
-  // Handed back as the redirect it was, for whoever asked to follow -- and
-  // wherever it points is served out of the same archive, so nothing here has
-  // to chase it.
   network::TestURLLoaderClient client;
-  FetchBody(factory, "https://example.org/old", &client);
-  EXPECT_EQ(net::OK, client.completion_status().error_code);
-  ASSERT_TRUE(client.response_head());
+  Start(factory, "https://example.org/old", &client);
+  client.RunUntilRedirectReceived();
+  EXPECT_EQ(301, client.redirect_info().status_code);
+  EXPECT_EQ(GURL("https://example.org/new"), client.redirect_info().new_url);
   EXPECT_EQ(301, client.response_head()->headers->response_code());
-  EXPECT_EQ("https://example.org/new",
-            client.response_head()->headers->GetNormalizedHeader("Location"));
+
+  Follow(&client);
+  EXPECT_EQ("arrived", ReadBody(&client));
+  EXPECT_EQ(net::OK, client.completion_status().error_code);
+  EXPECT_EQ(200, client.response_head()->headers->response_code());
+}
+
+// A form posted and answered with "see other" is sent on as a GET, and it is
+// the GET the archive holds an answer to.
+TEST_F(WaczUrlLoaderFactoryTest, ARedirectedPostIsFollowedAsAGet) {
+  const GURL login("https://example.org/login");
+  AddResponseUnder(
+      RequestKey(login, "POST", "application/x-www-form-urlencoded", "u=a"),
+      login.spec(),
+      "HTTP/1.1 303 See Other\r\nLocation: https://example.org/home\r\n\r\n",
+      "");
+  AddResponse("https://example.org/home", "HTTP/1.1 200 OK\r\n\r\n", "home");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::ResourceRequest request;
+  request.url = login;
+  request.method = "POST";
+  request.headers.SetHeader(net::HttpRequestHeaders::kContentType,
+                            "application/x-www-form-urlencoded");
+  request.request_body = network::ResourceRequestBody::CreateFromCopyOfBytes(
+      base::as_byte_span(std::string_view("u=a")));
+
+  network::TestURLLoaderClient client;
+  Start(factory, request, &client);
+  client.RunUntilRedirectReceived();
+  EXPECT_EQ("GET", client.redirect_info().new_method);
+
+  Follow(&client);
+  EXPECT_EQ("home", ReadBody(&client));
+}
+
+// Captures can send a request round in a circle no server did -- two
+// redirects captured at different moments, or found as each other's nearest.
+TEST_F(WaczUrlLoaderFactoryTest, ARedirectLoopEndsWhereTheNetworkWouldEndIt) {
+  AddResponse("https://example.org/a",
+              "HTTP/1.1 302 Found\r\nLocation: /b\r\n\r\n", "");
+  AddResponse("https://example.org/b",
+              "HTTP/1.1 302 Found\r\nLocation: /a\r\n\r\n", "");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  Start(factory, "https://example.org/a", &client);
+  for (int i = 0; i < net::URLRequest::kMaxRedirects; ++i) {
+    client.RunUntilRedirectReceived();
+    Follow(&client);
+  }
+  client.RunUntilComplete();
+  EXPECT_FALSE(client.has_received_redirect());
+  EXPECT_EQ(net::ERR_TOO_MANY_REDIRECTS, client.completion_status().error_code);
+}
+
+TEST_F(WaczUrlLoaderFactoryTest, APageRedirectedOutOfTheArchiveSaysWhereTo) {
+  AddResponse(
+      "https://example.org/old",
+      "HTTP/1.1 302 Found\r\nLocation: https://example.org/gone\r\n\r\n", "");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::ResourceRequest request;
+  request.url = GURL("https://example.org/old");
+  request.destination = network::mojom::RequestDestination::kDocument;
+  network::TestURLLoaderClient client;
+  Start(factory, request, &client);
+  client.RunUntilRedirectReceived();
+
+  Follow(&client);
+  const std::string body = ReadBody(&client);
+  EXPECT_NE(std::string::npos, body.find("https://example.org/gone"));
+  EXPECT_EQ(404, client.response_head()->headers->response_code());
+}
+
+// Nothing an archive holds came from anywhere but the web.
+TEST_F(WaczUrlLoaderFactoryTest, ARedirectOffTheWebIsNotFollowed) {
+  AddResponse("https://example.org/old",
+              "HTTP/1.1 302 Found\r\nLocation: data:text/html,hi\r\n\r\n", "");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
+
+  network::TestURLLoaderClient client;
+  Start(factory, "https://example.org/old", &client);
+  client.RunUntilRedirectReceived();
+
+  Follow(&client);
+  client.RunUntilComplete();
+  EXPECT_EQ(net::ERR_UNSAFE_REDIRECT, client.completion_status().error_code);
 }
 
 TEST_F(WaczUrlLoaderFactoryTest, ANavigationMissLandsOnAPageSayingSo) {
@@ -622,8 +723,8 @@ TEST_F(WaczUrlLoaderFactoryTest, ARangedRequestForARedirectGetsTheRedirect) {
   mojo::Remote<network::mojom::URLLoaderFactory> factory = BuildFactory();
 
   network::TestURLLoaderClient client;
-  FetchBody(factory, "https://example.org/old", &client, "bytes=0-1");
-  ASSERT_TRUE(client.response_head());
+  Start(factory, "https://example.org/old", &client, "GET", "bytes=0-1");
+  client.RunUntilRedirectReceived();
   EXPECT_EQ(302, client.response_head()->headers->response_code());
 }
 
